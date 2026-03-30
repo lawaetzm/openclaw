@@ -37,6 +37,27 @@ async function loadSlackSendRuntime() {
   return await slackSendRuntimePromise;
 }
 
+function hasExecApprovalMetadata(channelData?: Record<string, unknown>): boolean {
+  const execApproval = channelData?.execApproval;
+  return Boolean(execApproval && typeof execApproval === "object" && !Array.isArray(execApproval));
+}
+
+function resolveSlackPayloadText(payload: {
+  text?: string;
+  interactive?: InteractiveReply;
+  channelData?: Record<string, unknown>;
+}): string {
+  if (payload.interactive && hasExecApprovalMetadata(payload.channelData)) {
+    return "Approval required. Use the buttons below.";
+  }
+  return (
+    resolveInteractiveTextFallback({
+      text: payload.text,
+      interactive: payload.interactive,
+    }) ?? ""
+  );
+}
+
 function resolveRenderedInteractiveBlocks(
   interactive?: InteractiveReply,
 ): SlackBlock[] | undefined {
@@ -158,11 +179,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
   sendPayload: async (ctx) => {
     const payload = {
       ...ctx.payload,
-      text:
-        resolveInteractiveTextFallback({
-          text: ctx.payload.text,
-          interactive: ctx.payload.interactive,
-        }) ?? "",
+      text: resolveSlackPayloadText(ctx.payload),
     };
     const blocks = resolveSlackBlocks(payload);
     if (!blocks) {
