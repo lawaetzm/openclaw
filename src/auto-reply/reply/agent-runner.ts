@@ -29,6 +29,10 @@ import {
 import type { OriginatingChannelType, TemplateContext } from "../templating.js";
 import { resolveResponseUsageMode, type VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
+import {
+  appendUnfulfilledDelegationNote,
+  hasDelegationCommitment,
+} from "./agent-runner-delegation-guard.js";
 import { runAgentTurnWithFallback } from "./agent-runner-execution.js";
 import {
   createShouldEmitToolOutput,
@@ -594,10 +598,20 @@ export async function runReplyAgent(params: {
             sessionKey,
           })
         : false;
-    const guardedReplyPayloads =
+    const reminderGuardedPayloads =
       hasReminderCommitment && successfulCronAdds === 0 && !coveredByExistingCron
         ? appendUnscheduledReminderNote(replyPayloads)
         : replyPayloads;
+
+    const hasDelegationPromise = reminderGuardedPayloads.some(
+      (payload) =>
+        !payload.isError &&
+        typeof payload.text === "string" &&
+        hasDelegationCommitment(payload.text),
+    );
+    const guardedReplyPayloads = hasDelegationPromise
+      ? appendUnfulfilledDelegationNote(reminderGuardedPayloads)
+      : reminderGuardedPayloads;
 
     await signalTypingIfNeeded(guardedReplyPayloads, typingSignals);
 
