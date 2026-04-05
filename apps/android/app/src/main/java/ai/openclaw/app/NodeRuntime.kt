@@ -44,7 +44,14 @@ import java.util.concurrent.atomic.AtomicLong
 class NodeRuntime(
   context: Context,
   val prefs: SecurePrefs = SecurePrefs(context.applicationContext),
+  private val tlsFingerprintProbe: suspend (String, Int) -> String? = ::probeGatewayTlsFingerprint,
 ) {
+  data class GatewayConnectAuth(
+    val token: String?,
+    val bootstrapToken: String?,
+    val password: String?,
+  )
+
   private val appContext = context.applicationContext
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val deviceAuthStore = DeviceAuthStore(prefs)
@@ -183,6 +190,7 @@ class NodeRuntime(
   data class GatewayTrustPrompt(
     val endpoint: GatewayEndpoint,
     val fingerprintSha256: String,
+    val auth: GatewayConnectAuth,
   )
 
   private val _isConnected = MutableStateFlow(false)
@@ -775,41 +783,68 @@ class NodeRuntime(
       }
     operatorStatusText = "Connecting…"
     updateStatus()
-    val token = prefs.loadGatewayToken()
-    val bootstrapToken = prefs.loadGatewayBootstrapToken()
-    val password = prefs.loadGatewayPassword()
+    connectWithAuth(endpoint = endpoint, auth = resolveGatewayConnectAuth(), reconnect = true)
+  }
+
+  private fun connectWithAuth(
+    endpoint: GatewayEndpoint,
+    auth: GatewayConnectAuth,
+    reconnect: Boolean = false,
+  ) {
     val tls = connectionManager.resolveTlsParams(endpoint)
-    operatorSession.connect(
-      endpoint,
-      token,
-      bootstrapToken,
-      password,
-      connectionManager.buildOperatorConnectOptions(),
-      tls,
-    )
+    val connectOperator =
+      shouldConnectOperatorSession(
+        auth.token,
+        auth.bootstrapToken,
+        auth.password,
+        loadStoredRoleDeviceToken("operator"),
+      )
+    if (!connectOperator) {
+      operatorConnected = false
+      operatorStatusText = "Offline"
+      operatorSession.disconnect()
+      updateStatus()
+    } else {
+      operatorSession.connect(
+        endpoint,
+        auth.token,
+        auth.bootstrapToken,
+        auth.password,
+        connectionManager.buildOperatorConnectOptions(),
+        tls,
+      )
+    }
     nodeSession.connect(
       endpoint,
-      token,
-      bootstrapToken,
-      password,
+      auth.token,
+      auth.bootstrapToken,
+      auth.password,
       connectionManager.buildNodeConnectOptions(),
       tls,
     )
-    operatorSession.reconnect()
-    nodeSession.reconnect()
+    if (reconnect && connectOperator) {
+      operatorSession.reconnect()
+    }
+    if (reconnect) {
+      nodeSession.reconnect()
+    }
   }
 
-  fun connect(endpoint: GatewayEndpoint) {
+  private fun beginConnect(
+    endpoint: GatewayEndpoint,
+    auth: GatewayConnectAuth,
+  ) {
     val tls = connectionManager.resolveTlsParams(endpoint)
     if (tls?.required == true && tls.expectedFingerprint.isNullOrBlank()) {
       // First-time TLS: capture fingerprint, ask user to verify out-of-band, then store and connect.
       _statusText.value = "Verify gateway TLS fingerprint…"
       scope.launch {
-        val fp = probeGatewayTlsFingerprint(endpoint.host, endpoint.port) ?: run {
+        val fp = tlsFingerprintProbe(endpoint.host, endpoint.port) ?: run {
           _statusText.value = "Failed: can't read TLS fingerprint"
           return@launch
         }
-        _pendingGatewayTrust.value = GatewayTrustPrompt(endpoint = endpoint, fingerprintSha256 = fp)
+        _pendingGatewayTrust.value =
+          GatewayTrustPrompt(endpoint = endpoint, fingerprintSha256 = fp, auth = auth)
       }
       return
     }
@@ -818,32 +853,34 @@ class NodeRuntime(
     operatorStatusText = "Connecting…"
     nodeStatusText = "Connecting…"
     updateStatus()
-    val token = prefs.loadGatewayToken()
-    val bootstrapToken = prefs.loadGatewayBootstrapToken()
-    val password = prefs.loadGatewayPassword()
-    operatorSession.connect(
-      endpoint,
-      token,
-      bootstrapToken,
-      password,
-      connectionManager.buildOperatorConnectOptions(),
-      tls,
-    )
-    nodeSession.connect(
-      endpoint,
-      token,
-      bootstrapToken,
-      password,
-      connectionManager.buildNodeConnectOptions(),
-      tls,
-    )
+    connectWithAuth(endpoint = endpoint, auth = auth)
+  }
+
+  fun connect(endpoint: GatewayEndpoint) {
+    beginConnect(endpoint = endpoint, auth = resolveGatewayConnectAuth())
+  }
+
+  fun connect(
+    endpoint: GatewayEndpoint,
+    auth: GatewayConnectAuth,
+  ) {
+    beginConnect(endpoint = endpoint, auth = resolveGatewayConnectAuth(auth))
+  }
+
+  internal fun resolveGatewayConnectAuth(explicitAuth: GatewayConnectAuth? = null): GatewayConnectAuth {
+    return explicitAuth
+      ?: GatewayConnectAuth(
+        token = prefs.loadGatewayToken(),
+        bootstrapToken = prefs.loadGatewayBootstrapToken(),
+        password = prefs.loadGatewayPassword(),
+      )
   }
 
   fun acceptGatewayTrustPrompt() {
     val prompt = _pendingGatewayTrust.value ?: return
     _pendingGatewayTrust.value = null
     prefs.saveGatewayTlsFingerprint(prompt.endpoint.stableId, prompt.fingerprintSha256)
-    connect(prompt.endpoint)
+    beginConnect(endpoint = prompt.endpoint, auth = prompt.auth)
   }
 
   fun declineGatewayTrustPrompt() {
@@ -866,6 +903,11 @@ class NodeRuntime(
       return
     }
     connect(GatewayEndpoint.manual(host = host, port = port))
+  }
+
+  private fun loadStoredRoleDeviceToken(role: String): String? {
+    val deviceId = identityStore.loadOrCreate().deviceId
+    return deviceAuthStore.loadToken(deviceId, role)
   }
 
   fun disconnect() {
@@ -978,6 +1020,14 @@ class NodeRuntime(
 
   fun sendChat(message: String, thinking: String, attachments: List<OutgoingAttachment>) {
     chat.sendMessage(message = message, thinkingLevel = thinking, attachments = attachments)
+  }
+
+  suspend fun sendChatAwaitAcceptance(
+    message: String,
+    thinking: String,
+    attachments: List<OutgoingAttachment>,
+  ): Boolean {
+    return chat.sendMessageAwaitAcceptance(message = message, thinkingLevel = thinking, attachments = attachments)
   }
 
   private fun handleGatewayEvent(event: String, payloadJson: String?) {
@@ -1195,6 +1245,20 @@ class NodeRuntime(
     }
   }
 
+}
+
+internal fun shouldConnectOperatorSession(
+  token: String?,
+  bootstrapToken: String?,
+  password: String?,
+  storedOperatorToken: String?,
+): Boolean {
+  return (
+    !token.isNullOrBlank() ||
+      !bootstrapToken.isNullOrBlank() ||
+      !password.isNullOrBlank() ||
+      !storedOperatorToken.isNullOrBlank()
+    )
 }
 
 private enum class HomeCanvasGatewayState {
