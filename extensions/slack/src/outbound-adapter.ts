@@ -17,12 +17,22 @@ import {
   sendPayloadMediaSequenceAndFinalize,
   sendTextMediaPayload,
 } from "openclaw/plugin-sdk/reply-payload";
+import { resolveSlackAccount } from "./accounts.js";
 import { parseSlackBlocksInput } from "./blocks-input.js";
 import { buildSlackInteractiveBlocks, type SlackBlock } from "./blocks-render.js";
+import { compileSlackInteractiveReplies } from "./interactive-replies.js";
 import { SLACK_TEXT_LIMIT } from "./limits.js";
-import { sendMessageSlack, type SlackSendIdentity } from "./send.js";
+import type { SlackSendIdentity } from "./send.js";
 
 const SLACK_MAX_BLOCKS = 50;
+type SlackSendFn = typeof import("./send.runtime.js").sendMessageSlack;
+
+let slackSendRuntimePromise: Promise<typeof import("./send.runtime.js")> | undefined;
+
+async function loadSlackSendRuntime() {
+  slackSendRuntimePromise ??= import("./send.runtime.js");
+  return await slackSendRuntimePromise;
+}
 
 function hasExecApprovalMetadata(channelData?: Record<string, unknown>): boolean {
   const execApproval = channelData?.execApproval;
@@ -70,6 +80,7 @@ function resolveSlackSendIdentity(identity?: OutboundIdentity): SlackSendIdentit
 }
 
 async function applySlackMessageSendingHooks(params: {
+  cfg: NonNullable<NonNullable<Parameters<SlackSendFn>[2]>["cfg"]>;
   to: string;
   text: string;
   threadTs?: string;
@@ -80,6 +91,10 @@ async function applySlackMessageSendingHooks(params: {
   if (!hookRunner?.hasHooks("message_sending")) {
     return { cancelled: false, text: params.text };
   }
+  const account = resolveSlackAccount({
+    cfg: params.cfg,
+    accountId: params.accountId,
+  });
   const hookResult = await hookRunner.runMessageSending(
     {
       to: params.to,
@@ -90,7 +105,7 @@ async function applySlackMessageSendingHooks(params: {
         ...(params.mediaUrl ? { mediaUrl: params.mediaUrl } : {}),
       },
     },
-    { channelId: "slack", accountId: params.accountId ?? undefined },
+    { channelId: "slack", accountId: account.accountId },
   );
   if (hookResult?.cancel) {
     return { cancelled: true, text: params.text };
@@ -99,7 +114,7 @@ async function applySlackMessageSendingHooks(params: {
 }
 
 async function sendSlackOutboundMessage(params: {
-  cfg: NonNullable<Parameters<typeof sendMessageSlack>[2]>["cfg"];
+  cfg: NonNullable<NonNullable<Parameters<SlackSendFn>[2]>["cfg"]>;
   to: string;
   text: string;
   mediaUrl?: string;
@@ -109,7 +124,7 @@ async function sendSlackOutboundMessage(params: {
   };
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
-  blocks?: NonNullable<Parameters<typeof sendMessageSlack>[2]>["blocks"];
+  blocks?: NonNullable<Parameters<SlackSendFn>[2]>["blocks"];
   accountId?: string | null;
   deps?: { [channelId: string]: unknown } | null;
   replyToId?: string | null;
@@ -117,10 +132,12 @@ async function sendSlackOutboundMessage(params: {
   identity?: OutboundIdentity;
 }) {
   const send =
-    resolveOutboundSendDep<typeof sendMessageSlack>(params.deps, "slack") ?? sendMessageSlack;
+    resolveOutboundSendDep<SlackSendFn>(params.deps, "slack") ??
+    (await loadSlackSendRuntime()).sendMessageSlack;
   const threadTs =
     params.replyToId ?? (params.threadId != null ? String(params.threadId) : undefined);
   const hookResult = await applySlackMessageSendingHooks({
+    cfg: params.cfg,
     to: params.to,
     text: params.text,
     threadTs,
@@ -182,6 +199,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
   chunker: null,
   textChunkLimit: SLACK_TEXT_LIMIT,
+  normalizePayload: ({ payload }) => compileSlackInteractiveReplies(payload),
   sendPayload: async (ctx) => {
     const payload = {
       ...ctx.payload,

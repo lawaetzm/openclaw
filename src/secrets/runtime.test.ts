@@ -4,18 +4,14 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProfileStore } from "../agents/auth-profiles.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { createEmptyPluginRegistry } from "../plugins/registry.js";
+import { setActivePluginRegistry } from "../plugins/runtime.js";
 import type { PluginWebSearchProviderEntry } from "../plugins/types.js";
 
 type WebProviderUnderTest = "brave" | "gemini" | "grok" | "kimi" | "perplexity" | "firecrawl";
 
-const { resolveBundledPluginWebSearchProvidersMock, resolvePluginWebSearchProvidersMock } =
-  vi.hoisted(() => ({
-    resolveBundledPluginWebSearchProvidersMock: vi.fn(() => buildTestWebSearchProviders()),
-    resolvePluginWebSearchProvidersMock: vi.fn(() => buildTestWebSearchProviders()),
-  }));
-
-vi.mock("../plugins/web-search-providers.js", () => ({
-  resolveBundledPluginWebSearchProviders: resolveBundledPluginWebSearchProvidersMock,
+const { resolvePluginWebSearchProvidersMock } = vi.hoisted(() => ({
+  resolvePluginWebSearchProvidersMock: vi.fn(() => buildTestWebSearchProviders()),
 }));
 
 vi.mock("../plugins/web-search-providers.runtime.js", () => ({
@@ -96,7 +92,6 @@ let clearConfigCache: typeof import("../config/config.js").clearConfigCache;
 let clearRuntimeConfigSnapshot: typeof import("../config/config.js").clearRuntimeConfigSnapshot;
 let activateSecretsRuntimeSnapshot: typeof import("./runtime.js").activateSecretsRuntimeSnapshot;
 let clearSecretsRuntimeSnapshot: typeof import("./runtime.js").clearSecretsRuntimeSnapshot;
-let getActiveRuntimeWebToolsMetadata: typeof import("./runtime.js").getActiveRuntimeWebToolsMetadata;
 let prepareSecretsRuntimeSnapshot: typeof import("./runtime.js").prepareSecretsRuntimeSnapshot;
 
 function createOpenAiFileModelsConfig(): NonNullable<OpenClawConfig["models"]> {
@@ -124,24 +119,20 @@ describe("secrets runtime snapshot", () => {
     ({
       activateSecretsRuntimeSnapshot,
       clearSecretsRuntimeSnapshot,
-      getActiveRuntimeWebToolsMetadata,
       prepareSecretsRuntimeSnapshot,
     } = await import("./runtime.js"));
   });
 
   beforeEach(() => {
-    resolveBundledPluginWebSearchProvidersMock.mockReset();
-    resolveBundledPluginWebSearchProvidersMock.mockReturnValue(buildTestWebSearchProviders());
     resolvePluginWebSearchProvidersMock.mockReset();
     resolvePluginWebSearchProvidersMock.mockReturnValue(buildTestWebSearchProviders());
   });
 
   afterEach(() => {
+    setActivePluginRegistry(createEmptyPluginRegistry());
     clearSecretsRuntimeSnapshot();
     clearRuntimeConfigSnapshot();
     clearConfigCache();
-    resolveBundledPluginWebSearchProvidersMock.mockReset();
-    resolvePluginWebSearchProvidersMock.mockReset();
   });
 
   it("resolves env refs for config and auth profiles", async () => {
@@ -180,9 +171,8 @@ describe("secrets runtime snapshot", () => {
         },
       },
       talk: {
-        apiKey: { source: "env", provider: "default", id: "TALK_API_KEY" },
         providers: {
-          elevenlabs: {
+          "acme-speech": {
             apiKey: { source: "env", provider: "default", id: "TALK_PROVIDER_API_KEY" },
           },
         },
@@ -238,7 +228,6 @@ describe("secrets runtime snapshot", () => {
         GITHUB_TOKEN: "ghp-env-token", // pragma: allowlist secret
         REVIEW_SKILL_API_KEY: "sk-skill-ref", // pragma: allowlist secret
         MEMORY_REMOTE_API_KEY: "mem-ref-key", // pragma: allowlist secret
-        TALK_API_KEY: "talk-ref-key", // pragma: allowlist secret
         TALK_PROVIDER_API_KEY: "talk-provider-ref-key", // pragma: allowlist secret
         REMOTE_GATEWAY_TOKEN: "remote-token-ref",
         REMOTE_GATEWAY_PASSWORD: "remote-password-ref", // pragma: allowlist secret
@@ -279,8 +268,8 @@ describe("secrets runtime snapshot", () => {
     );
     expect(snapshot.config.skills?.entries?.["review-pr"]?.apiKey).toBe("sk-skill-ref");
     expect(snapshot.config.agents?.defaults?.memorySearch?.remote?.apiKey).toBe("mem-ref-key");
-    expect(snapshot.config.talk?.apiKey).toBe("talk-ref-key");
-    expect(snapshot.config.talk?.providers?.elevenlabs?.apiKey).toBe("talk-provider-ref-key");
+    expect((snapshot.config.talk as { apiKey?: unknown } | undefined)?.apiKey).toBeUndefined();
+    expect(snapshot.config.talk?.providers?.["acme-speech"]?.apiKey).toBe("talk-provider-ref-key");
     expect(snapshot.config.gateway?.remote?.token).toBe("remote-token-ref");
     expect(snapshot.config.gateway?.remote?.password).toBe("remote-password-ref");
     expect(snapshot.config.channels?.telegram?.botToken).toEqual({
@@ -748,237 +737,71 @@ describe("secrets runtime snapshot", () => {
     expect(profile.key).toBe("primary-key-value");
   });
 
-  it("treats non-selected web search provider refs as inactive", async () => {
-    const snapshot = await prepareSecretsRuntimeSnapshot({
-      config: asConfig({
-        tools: {
-          web: {
-            search: {
-              enabled: true,
-              provider: "brave",
-              apiKey: { source: "env", provider: "default", id: "WEB_SEARCH_API_KEY" },
-            },
-          },
-        },
-        plugins: {
-          entries: {
-            xai: {
-              config: {
-                webSearch: {
-                  apiKey: { source: "env", provider: "default", id: "MISSING_GROK_API_KEY" },
+  it("resolves model provider request secret refs for headers, auth, and tls material", async () => {
+    const config = asConfig({
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            request: {
+              headers: {
+                "X-Tenant": { source: "env", provider: "default", id: "OPENAI_PROVIDER_TENANT" },
+              },
+              auth: {
+                mode: "authorization-bearer",
+                token: { source: "env", provider: "default", id: "OPENAI_PROVIDER_TOKEN" },
+              },
+              proxy: {
+                mode: "explicit-proxy",
+                url: "http://proxy.example:8080",
+                tls: {
+                  ca: { source: "env", provider: "default", id: "OPENAI_PROVIDER_PROXY_CA" },
                 },
               },
+              tls: {
+                cert: { source: "env", provider: "default", id: "OPENAI_PROVIDER_CERT" },
+                key: { source: "env", provider: "default", id: "OPENAI_PROVIDER_KEY" },
+              },
             },
+            models: [],
           },
         },
-      }),
+      },
+    });
+
+    const snapshot = await prepareSecretsRuntimeSnapshot({
+      config,
       env: {
-        WEB_SEARCH_API_KEY: "web-search-ref", // pragma: allowlist secret
+        OPENAI_PROVIDER_TENANT: "tenant-acme",
+        OPENAI_PROVIDER_TOKEN: "sk-provider-runtime", // pragma: allowlist secret
+        OPENAI_PROVIDER_PROXY_CA: "proxy-ca",
+        OPENAI_PROVIDER_CERT: "client-cert",
+        OPENAI_PROVIDER_KEY: "client-key",
       },
       agentDirs: ["/tmp/openclaw-agent-main"],
       loadAuthStore: () => ({ version: 1, profiles: {} }),
     });
 
-    expect(snapshot.config.tools?.web?.search?.apiKey).toBe("web-search-ref");
-    const xaiWebSearchConfig = snapshot.config.plugins?.entries?.xai?.config as
-      | { webSearch?: { apiKey?: unknown } }
-      | undefined;
-    expect(xaiWebSearchConfig?.webSearch?.apiKey).toEqual({
-      source: "env",
-      provider: "default",
-      id: "MISSING_GROK_API_KEY",
-    });
-    expect(snapshot.warnings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: "SECRETS_REF_IGNORED_INACTIVE_SURFACE",
-          path: "plugins.entries.xai.config.webSearch.apiKey",
-        }),
-      ]),
-    );
-  });
-
-  it("keeps non-selected provider refs inactive in web search auto mode", async () => {
-    const snapshot = await prepareSecretsRuntimeSnapshot({
-      config: asConfig({
-        tools: {
-          web: {
-            search: {
-              enabled: true,
-              apiKey: { source: "env", provider: "default", id: "WEB_SEARCH_API_KEY" },
-            },
-          },
-        },
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: {
-                    source: "env",
-                    provider: "default",
-                    id: "WEB_SEARCH_GEMINI_API_KEY",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }),
-      env: {
-        WEB_SEARCH_API_KEY: "web-search-ref", // pragma: allowlist secret
-        WEB_SEARCH_GEMINI_API_KEY: "web-search-gemini-ref", // pragma: allowlist secret
+    expect(snapshot.config.models?.providers?.openai?.request).toEqual({
+      headers: {
+        "X-Tenant": "tenant-acme",
       },
-      agentDirs: ["/tmp/openclaw-agent-main"],
-      loadAuthStore: () => ({ version: 1, profiles: {} }),
-    });
-
-    expect(snapshot.config.tools?.web?.search?.apiKey).toBe("web-search-ref");
-    const googleWebSearchConfig = snapshot.config.plugins?.entries?.google?.config as
-      | { webSearch?: { apiKey?: unknown } }
-      | undefined;
-    expect(googleWebSearchConfig?.webSearch?.apiKey).toEqual({
-      source: "env",
-      provider: "default",
-      id: "WEB_SEARCH_GEMINI_API_KEY",
-    });
-    expect(snapshot.webTools.search.selectedProvider).toBe("brave");
-    expect(snapshot.warnings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: "SECRETS_REF_IGNORED_INACTIVE_SURFACE",
-          path: "plugins.entries.google.config.webSearch.apiKey",
-        }),
-      ]),
-    );
-  });
-
-  it("resolves selected web search provider ref even when provider config is disabled", async () => {
-    const snapshot = await prepareSecretsRuntimeSnapshot({
-      config: asConfig({
-        tools: {
-          web: {
-            search: {
-              enabled: true,
-              provider: "gemini",
-            },
-          },
-        },
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  enabled: false,
-                  apiKey: {
-                    source: "env",
-                    provider: "default",
-                    id: "WEB_SEARCH_GEMINI_API_KEY",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }),
-      env: {
-        WEB_SEARCH_GEMINI_API_KEY: "web-search-gemini-ref", // pragma: allowlist secret
+      auth: {
+        mode: "authorization-bearer",
+        token: "sk-provider-runtime",
       },
-      agentDirs: ["/tmp/openclaw-agent-main"],
-      loadAuthStore: () => ({ version: 1, profiles: {} }),
-    });
-    const resolvedGoogleWebSearchConfig = snapshot.config.plugins?.entries?.google?.config as
-      | { webSearch?: { apiKey?: unknown } }
-      | undefined;
-    expect(resolvedGoogleWebSearchConfig?.webSearch?.apiKey).toBe("web-search-gemini-ref");
-    expect(snapshot.warnings.map((warning) => warning.path)).not.toContain(
-      "plugins.entries.google.config.webSearch.apiKey",
-    );
-  });
-
-  it("fails fast at startup when selected web search provider ref is unresolved", async () => {
-    await expect(
-      prepareSecretsRuntimeSnapshot({
-        config: asConfig({
-          tools: {
-            web: {
-              search: {
-                enabled: true,
-                provider: "gemini",
-              },
-            },
-          },
-          plugins: {
-            entries: {
-              google: {
-                config: {
-                  webSearch: {
-                    apiKey: {
-                      source: "env",
-                      provider: "default",
-                      id: "MISSING_WEB_SEARCH_GEMINI_API_KEY",
-                    },
-                  },
-                },
-              },
-            },
-          },
-        }),
-        env: {},
-        agentDirs: ["/tmp/openclaw-agent-main"],
-        loadAuthStore: () => ({ version: 1, profiles: {} }),
-      }),
-    ).rejects.toThrow("[WEB_SEARCH_KEY_UNRESOLVED_NO_FALLBACK]");
-  });
-
-  it("exposes active runtime web tool metadata as a defensive clone", async () => {
-    const snapshot = await prepareSecretsRuntimeSnapshot({
-      config: asConfig({
-        tools: {
-          web: {
-            search: {
-              provider: "gemini",
-            },
-          },
+      proxy: {
+        mode: "explicit-proxy",
+        url: "http://proxy.example:8080",
+        tls: {
+          ca: "proxy-ca",
         },
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: {
-                    source: "env",
-                    provider: "default",
-                    id: "WEB_SEARCH_GEMINI_API_KEY",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }),
-      env: {
-        WEB_SEARCH_GEMINI_API_KEY: "web-search-gemini-ref", // pragma: allowlist secret
       },
-      agentDirs: ["/tmp/openclaw-agent-main"],
-      loadAuthStore: () => ({ version: 1, profiles: {} }),
+      tls: {
+        cert: "client-cert",
+        key: "client-key",
+      },
     });
-
-    activateSecretsRuntimeSnapshot(snapshot);
-
-    const first = getActiveRuntimeWebToolsMetadata();
-    expect(first?.search.providerConfigured).toBe("gemini");
-    expect(first?.search.selectedProvider).toBe("gemini");
-    expect(first?.search.selectedProviderKeySource).toBe("secretRef");
-    if (!first) {
-      throw new Error("missing runtime web tools metadata");
-    }
-    first.search.providerConfigured = "brave";
-    first.search.selectedProvider = "brave";
-
-    const second = getActiveRuntimeWebToolsMetadata();
-    expect(second?.search.providerConfigured).toBe("gemini");
-    expect(second?.search.selectedProvider).toBe("gemini");
   });
 
   it("resolves file refs via configured file provider", async () => {
@@ -1149,7 +972,7 @@ describe("secrets runtime snapshot", () => {
     const ignoredInactiveWarnings = snapshot.warnings.filter(
       (warning) => warning.code === "SECRETS_REF_IGNORED_INACTIVE_SURFACE",
     );
-    expect(ignoredInactiveWarnings).toHaveLength(10);
+    expect(ignoredInactiveWarnings).toHaveLength(6);
     expect(snapshot.warnings.map((warning) => warning.path)).toEqual(
       expect.arrayContaining([
         "agents.defaults.memorySearch.remote.apiKey",
@@ -1158,10 +981,6 @@ describe("secrets runtime snapshot", () => {
         "channels.telegram.accounts.disabled.botToken",
         "plugins.entries.brave.config.webSearch.apiKey",
         "plugins.entries.google.config.webSearch.apiKey",
-        "plugins.entries.xai.config.webSearch.apiKey",
-        "plugins.entries.moonshot.config.webSearch.apiKey",
-        "plugins.entries.perplexity.config.webSearch.apiKey",
-        "plugins.entries.firecrawl.config.webSearch.apiKey",
       ]),
     );
   });
@@ -1286,6 +1105,350 @@ describe("secrets runtime snapshot", () => {
         loadAuthStore: () => ({ version: 1, profiles: {} }),
       }),
     ).rejects.toThrow(/MISSING_GATEWAY_TOKEN_REF/i);
+  });
+
+  it("resolves media request secret refs for provider headers, auth, and tls material", async () => {
+    const snapshot = await prepareSecretsRuntimeSnapshot({
+      config: asConfig({
+        tools: {
+          media: {
+            models: [
+              {
+                provider: "openai",
+                model: "gpt-4o-mini-transcribe",
+                capabilities: ["audio"],
+                request: {
+                  headers: {
+                    "X-Shared-Tenant": {
+                      source: "env",
+                      provider: "default",
+                      id: "MEDIA_SHARED_TENANT",
+                    },
+                  },
+                  auth: {
+                    mode: "header",
+                    headerName: "x-shared-key",
+                    value: {
+                      source: "env",
+                      provider: "default",
+                      id: "MEDIA_SHARED_MODEL_KEY",
+                    },
+                  },
+                },
+              },
+            ],
+            audio: {
+              enabled: true,
+              request: {
+                headers: {
+                  "X-Tenant": { source: "env", provider: "default", id: "MEDIA_AUDIO_TENANT" },
+                },
+                auth: {
+                  mode: "authorization-bearer",
+                  token: { source: "env", provider: "default", id: "MEDIA_AUDIO_TOKEN" },
+                },
+                tls: {
+                  cert: { source: "env", provider: "default", id: "MEDIA_AUDIO_CERT" },
+                },
+              },
+              models: [
+                {
+                  provider: "deepgram",
+                  request: {
+                    auth: {
+                      mode: "header",
+                      headerName: "x-api-key",
+                      value: { source: "env", provider: "default", id: "MEDIA_AUDIO_MODEL_KEY" },
+                    },
+                    proxy: {
+                      mode: "explicit-proxy",
+                      url: "http://proxy.example:8080",
+                      tls: {
+                        ca: { source: "env", provider: "default", id: "MEDIA_AUDIO_PROXY_CA" },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }),
+      env: {
+        MEDIA_SHARED_TENANT: "tenant-shared",
+        MEDIA_SHARED_MODEL_KEY: "shared-model-key", // pragma: allowlist secret
+        MEDIA_AUDIO_TENANT: "tenant-acme",
+        MEDIA_AUDIO_TOKEN: "audio-token", // pragma: allowlist secret
+        MEDIA_AUDIO_CERT: "client-cert",
+        MEDIA_AUDIO_MODEL_KEY: "model-key", // pragma: allowlist secret
+        MEDIA_AUDIO_PROXY_CA: "proxy-ca",
+      },
+      agentDirs: ["/tmp/openclaw-agent-main"],
+      loadAuthStore: () => ({ version: 1, profiles: {} }),
+    });
+
+    expect(snapshot.config.tools?.media?.audio?.request?.headers?.["X-Tenant"]).toBe("tenant-acme");
+    expect(snapshot.config.tools?.media?.audio?.request?.auth).toEqual({
+      mode: "authorization-bearer",
+      token: "audio-token",
+    });
+    expect(snapshot.config.tools?.media?.audio?.request?.tls).toEqual({
+      cert: "client-cert",
+    });
+    expect(snapshot.config.tools?.media?.models?.[0]?.request).toEqual({
+      headers: {
+        "X-Shared-Tenant": "tenant-shared",
+      },
+      auth: {
+        mode: "header",
+        headerName: "x-shared-key",
+        value: "shared-model-key",
+      },
+    });
+    expect(snapshot.config.tools?.media?.audio?.models?.[0]?.request).toEqual({
+      auth: {
+        mode: "header",
+        headerName: "x-api-key",
+        value: "model-key",
+      },
+      proxy: {
+        mode: "explicit-proxy",
+        url: "http://proxy.example:8080",
+        tls: {
+          ca: "proxy-ca",
+        },
+      },
+    });
+  });
+
+  it("resolves shared media model request refs when capability blocks are omitted", async () => {
+    const snapshot = await prepareSecretsRuntimeSnapshot({
+      config: asConfig({
+        tools: {
+          media: {
+            models: [
+              {
+                provider: "openai",
+                model: "gpt-4o-mini-transcribe",
+                capabilities: ["audio"],
+                request: {
+                  auth: {
+                    mode: "authorization-bearer",
+                    token: {
+                      source: "env",
+                      provider: "default",
+                      id: "MEDIA_SHARED_AUDIO_TOKEN",
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      }),
+      env: {
+        MEDIA_SHARED_AUDIO_TOKEN: "shared-audio-token", // pragma: allowlist secret
+      },
+      agentDirs: ["/tmp/openclaw-agent-main"],
+      loadAuthStore: () => ({ version: 1, profiles: {} }),
+    });
+
+    expect(snapshot.config.tools?.media?.models?.[0]?.request?.auth).toEqual({
+      mode: "authorization-bearer",
+      token: "shared-audio-token",
+    });
+    expect(snapshot.warnings.map((warning) => warning.path)).not.toContain(
+      "tools.media.models.0.request.auth.token",
+    );
+  });
+
+  it("treats shared media model request refs as inactive when their capabilities are disabled", async () => {
+    const sharedTokenRef = {
+      source: "env" as const,
+      provider: "default" as const,
+      id: "MEDIA_DISABLED_AUDIO_TOKEN",
+    };
+    const snapshot = await prepareSecretsRuntimeSnapshot({
+      config: asConfig({
+        tools: {
+          media: {
+            models: [
+              {
+                provider: "openai",
+                model: "gpt-4o-mini-transcribe",
+                capabilities: ["audio"],
+                request: {
+                  auth: {
+                    mode: "authorization-bearer",
+                    token: sharedTokenRef,
+                  },
+                },
+              },
+            ],
+            audio: {
+              enabled: false,
+            },
+          },
+        },
+      }),
+      env: {},
+      agentDirs: ["/tmp/openclaw-agent-main"],
+      loadAuthStore: () => ({ version: 1, profiles: {} }),
+    });
+
+    expect(snapshot.config.tools?.media?.models?.[0]?.request?.auth).toEqual({
+      mode: "authorization-bearer",
+      token: sharedTokenRef,
+    });
+    expect(snapshot.warnings.map((warning) => warning.path)).toContain(
+      "tools.media.models.0.request.auth.token",
+    );
+  });
+
+  it("resolves shared media model request refs from inferred provider capabilities", async () => {
+    const pluginRegistry = createEmptyPluginRegistry();
+    pluginRegistry.mediaUnderstandingProviders.push({
+      pluginId: "deepgram",
+      pluginName: "Deepgram Plugin",
+      source: "test",
+      provider: {
+        id: "deepgram",
+        capabilities: ["audio"],
+      },
+    });
+    setActivePluginRegistry(pluginRegistry);
+
+    const snapshot = await prepareSecretsRuntimeSnapshot({
+      config: asConfig({
+        tools: {
+          media: {
+            models: [
+              {
+                provider: "deepgram",
+                request: {
+                  auth: {
+                    mode: "authorization-bearer",
+                    token: {
+                      source: "env",
+                      provider: "default",
+                      id: "MEDIA_INFERRED_AUDIO_TOKEN",
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      }),
+      env: {
+        MEDIA_INFERRED_AUDIO_TOKEN: "inferred-audio-token", // pragma: allowlist secret
+      },
+      agentDirs: ["/tmp/openclaw-agent-main"],
+      loadAuthStore: () => ({ version: 1, profiles: {} }),
+    });
+
+    expect(snapshot.config.tools?.media?.models?.[0]?.request?.auth).toEqual({
+      mode: "authorization-bearer",
+      token: "inferred-audio-token",
+    });
+    expect(snapshot.warnings.map((warning) => warning.path)).not.toContain(
+      "tools.media.models.0.request.auth.token",
+    );
+  });
+
+  it("treats shared media model request refs as inactive when inferred capabilities are disabled", async () => {
+    const pluginRegistry = createEmptyPluginRegistry();
+    pluginRegistry.mediaUnderstandingProviders.push({
+      pluginId: "deepgram",
+      pluginName: "Deepgram Plugin",
+      source: "test",
+      provider: {
+        id: "deepgram",
+        capabilities: ["audio"],
+      },
+    });
+    setActivePluginRegistry(pluginRegistry);
+
+    const inferredTokenRef = {
+      source: "env" as const,
+      provider: "default" as const,
+      id: "MEDIA_INFERRED_DISABLED_AUDIO_TOKEN",
+    };
+    const snapshot = await prepareSecretsRuntimeSnapshot({
+      config: asConfig({
+        tools: {
+          media: {
+            models: [
+              {
+                provider: "deepgram",
+                request: {
+                  auth: {
+                    mode: "authorization-bearer",
+                    token: inferredTokenRef,
+                  },
+                },
+              },
+            ],
+            audio: {
+              enabled: false,
+            },
+          },
+        },
+      }),
+      env: {},
+      agentDirs: ["/tmp/openclaw-agent-main"],
+      loadAuthStore: () => ({ version: 1, profiles: {} }),
+    });
+
+    expect(snapshot.config.tools?.media?.models?.[0]?.request?.auth).toEqual({
+      mode: "authorization-bearer",
+      token: inferredTokenRef,
+    });
+    expect(snapshot.warnings.map((warning) => warning.path)).toContain(
+      "tools.media.models.0.request.auth.token",
+    );
+  });
+
+  it("treats section media model request refs as inactive when model capabilities exclude the section", async () => {
+    const sectionTokenRef = {
+      source: "env" as const,
+      provider: "default" as const,
+      id: "MEDIA_AUDIO_SECTION_FILTERED_TOKEN",
+    };
+    const snapshot = await prepareSecretsRuntimeSnapshot({
+      config: asConfig({
+        tools: {
+          media: {
+            audio: {
+              enabled: true,
+              models: [
+                {
+                  provider: "openai",
+                  capabilities: ["video"],
+                  request: {
+                    auth: {
+                      mode: "authorization-bearer",
+                      token: sectionTokenRef,
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }),
+      env: {},
+      agentDirs: ["/tmp/openclaw-agent-main"],
+      loadAuthStore: () => ({ version: 1, profiles: {} }),
+    });
+
+    expect(snapshot.config.tools?.media?.audio?.models?.[0]?.request?.auth).toEqual({
+      mode: "authorization-bearer",
+      token: sectionTokenRef,
+    });
+    expect(snapshot.warnings.map((warning) => warning.path)).toContain(
+      "tools.media.audio.models.0.request.auth.token",
+    );
   });
 
   it("fails when an active exec ref id contains traversal segments", async () => {
@@ -2719,7 +2882,7 @@ describe("secrets runtime snapshot", () => {
     }
   });
 
-  it("migrates legacy x_search SecretRefs into the xai plugin webSearch auth at runtime", async () => {
+  it("keeps legacy x_search SecretRefs in place until doctor repairs them", async () => {
     const snapshot = await prepareSecretsRuntimeSnapshot({
       config: asConfig({
         tools: {
@@ -2740,17 +2903,14 @@ describe("secrets runtime snapshot", () => {
     });
 
     expect((snapshot.config.tools?.web as Record<string, unknown> | undefined)?.x_search).toEqual({
+      apiKey: "xai-runtime-key",
       enabled: true,
       model: "grok-4-1-fast",
     });
-    expect(snapshot.config.plugins?.entries?.xai?.config).toEqual({
-      webSearch: {
-        apiKey: "xai-runtime-key",
-      },
-    });
+    expect(snapshot.config.plugins?.entries?.xai).toBeUndefined();
   });
 
-  it("still migrates legacy x_search auth when general legacy migration returns an invalid config", async () => {
+  it("still resolves legacy x_search auth in place even when unrelated legacy config is present", async () => {
     const snapshot = await prepareSecretsRuntimeSnapshot({
       config: asConfig({
         tools: {
@@ -2776,13 +2936,10 @@ describe("secrets runtime snapshot", () => {
     });
 
     expect((snapshot.config.tools?.web as Record<string, unknown> | undefined)?.x_search).toEqual({
+      apiKey: "xai-runtime-key-invalid-config",
       enabled: true,
     });
-    expect(snapshot.config.plugins?.entries?.xai?.config).toEqual({
-      webSearch: {
-        apiKey: "xai-runtime-key-invalid-config",
-      },
-    });
+    expect(snapshot.config.plugins?.entries?.xai).toBeUndefined();
   });
 
   it("does not force-enable xai at runtime for knob-only x_search config", async () => {

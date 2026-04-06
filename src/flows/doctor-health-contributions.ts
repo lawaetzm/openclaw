@@ -7,7 +7,9 @@ import {
   resolveConfiguredModelRef,
   resolveHooksGmailModel,
 } from "../agents/model-selection.js";
+import { runChannelPluginStartupMaintenance } from "../channels/plugins/lifecycle-startup.js";
 import { formatCliCommand } from "../cli/command-format.js";
+import { maybeRepairRemovedAnthropicClaudeCliState } from "../commands/doctor-auth-anthropic-claude-cli.js";
 import {
   maybeRemoveDeprecatedCliAuthProfiles,
   maybeRepairLegacyOAuthProfileIds,
@@ -25,7 +27,11 @@ import {
   maybeRepairGatewayServiceConfig,
   maybeScanExtraGatewayServices,
 } from "../commands/doctor-gateway-services.js";
-import { noteMemorySearchHealth } from "../commands/doctor-memory-search.js";
+import {
+  maybeRepairMemoryRecallHealth,
+  noteMemoryRecallHealth,
+  noteMemorySearchHealth,
+} from "../commands/doctor-memory-search.js";
 import {
   noteMacLaunchAgentOverrides,
   noteMacLaunchctlGatewayEnvOverrides,
@@ -53,7 +59,6 @@ import { resolveGatewayService } from "../daemon/service.js";
 import { hasAmbiguousGatewayAuthModeConfig } from "../gateway/auth-mode-policy.js";
 import { resolveGatewayAuth } from "../gateway/auth.js";
 import { buildGatewayConnectionDetails } from "../gateway/call.js";
-import { runStartupMatrixMigration } from "../gateway/server-startup-matrix-migration.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { note } from "../terminal/note.js";
 import { shortenHomePath } from "../utils.js";
@@ -138,6 +143,7 @@ async function runGatewayConfigHealth(ctx: DoctorHealthFlowContext): Promise<voi
 }
 
 async function runAuthProfileHealth(ctx: DoctorHealthFlowContext): Promise<void> {
+  ctx.cfg = await maybeRepairRemovedAnthropicClaudeCliState(ctx.cfg, ctx.prompter);
   ctx.cfg = await maybeRepairLegacyOAuthProfileIds(ctx.cfg, ctx.prompter);
   ctx.cfg = await maybeRemoveDeprecatedCliAuthProfiles(ctx.cfg, ctx.prompter);
   await noteAuthProfileHealth({
@@ -293,11 +299,11 @@ async function runGatewayServicesHealth(ctx: DoctorHealthFlowContext): Promise<v
   await noteMacLaunchctlGatewayEnvOverrides(ctx.cfg);
 }
 
-async function runStartupMatrixHealth(ctx: DoctorHealthFlowContext): Promise<void> {
+async function runStartupChannelMaintenanceHealth(ctx: DoctorHealthFlowContext): Promise<void> {
   if (!ctx.prompter.shouldRepair) {
     return;
   }
-  await runStartupMatrixMigration({
+  await runChannelPluginStartupMaintenance({
     cfg: ctx.cfg,
     env: process.env,
     log: {
@@ -425,9 +431,14 @@ async function runGatewayHealthChecks(ctx: DoctorHealthFlowContext): Promise<voi
 }
 
 async function runMemorySearchHealthContribution(ctx: DoctorHealthFlowContext): Promise<void> {
+  await maybeRepairMemoryRecallHealth({
+    cfg: ctx.cfg,
+    prompter: ctx.prompter,
+  });
   await noteMemorySearchHealth(ctx.cfg, {
     gatewayMemoryProbe: ctx.gatewayMemoryProbe ?? { checked: false, ready: false },
   });
+  await noteMemoryRecallHealth(ctx.cfg);
 }
 
 async function runGatewayDaemonHealth(ctx: DoctorHealthFlowContext): Promise<void> {
@@ -543,9 +554,9 @@ export function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
       run: runGatewayServicesHealth,
     }),
     createDoctorHealthContribution({
-      id: "doctor:startup-matrix",
-      label: "Startup matrix",
-      run: runStartupMatrixHealth,
+      id: "doctor:startup-channel-maintenance",
+      label: "Startup channel maintenance",
+      run: runStartupChannelMaintenanceHealth,
     }),
     createDoctorHealthContribution({
       id: "doctor:security",
