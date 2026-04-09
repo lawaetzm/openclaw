@@ -9,15 +9,15 @@ import {
 } from "../agents/model-selection.js";
 import { runChannelPluginStartupMaintenance } from "../channels/plugins/lifecycle-startup.js";
 import { formatCliCommand } from "../cli/command-format.js";
-import { maybeRepairRemovedAnthropicClaudeCliState } from "../commands/doctor-auth-anthropic-claude-cli.js";
 import {
-  maybeRemoveDeprecatedCliAuthProfiles,
   maybeRepairLegacyOAuthProfileIds,
   noteAuthProfileHealth,
+  noteLegacyCodexProviderOverride,
 } from "../commands/doctor-auth.js";
 import { noteBootstrapFileSize } from "../commands/doctor-bootstrap-size.js";
 import { noteChromeMcpBrowserReadiness } from "../commands/doctor-browser.js";
 import { maybeRepairBundledPluginRuntimeDeps } from "../commands/doctor-bundled-plugin-runtime-deps.js";
+import { noteClaudeCliHealth } from "../commands/doctor-claude-cli.js";
 import { doctorShellCompletion } from "../commands/doctor-completion.js";
 import { maybeRepairLegacyCronStore } from "../commands/doctor-cron.js";
 import { resolveGatewayAuthTokenForService } from "../commands/doctor-gateway-auth-token.js";
@@ -143,14 +143,13 @@ async function runGatewayConfigHealth(ctx: DoctorHealthFlowContext): Promise<voi
 }
 
 async function runAuthProfileHealth(ctx: DoctorHealthFlowContext): Promise<void> {
-  ctx.cfg = await maybeRepairRemovedAnthropicClaudeCliState(ctx.cfg, ctx.prompter);
   ctx.cfg = await maybeRepairLegacyOAuthProfileIds(ctx.cfg, ctx.prompter);
-  ctx.cfg = await maybeRemoveDeprecatedCliAuthProfiles(ctx.cfg, ctx.prompter);
   await noteAuthProfileHealth({
     cfg: ctx.cfg,
     prompter: ctx.prompter,
     allowKeychainPrompt: ctx.options.nonInteractive !== true && Boolean(process.stdin.isTTY),
   });
+  noteLegacyCodexProviderOverride(ctx.cfg);
   ctx.gatewayDetails = buildGatewayConnectionDetails({ config: ctx.cfg });
   if (ctx.gatewayDetails.remoteFallbackNote) {
     note(ctx.gatewayDetails.remoteFallbackNote, "Gateway");
@@ -222,6 +221,10 @@ async function runGatewayAuthHealth(ctx: DoctorHealthFlowContext): Promise<void>
     },
   };
   note("Gateway token configured.", "Gateway auth");
+}
+
+async function runClaudeCliHealth(ctx: DoctorHealthFlowContext): Promise<void> {
+  noteClaudeCliHealth(ctx.cfg);
 }
 
 async function runLegacyStateHealth(ctx: DoctorHealthFlowContext): Promise<void> {
@@ -507,6 +510,11 @@ export function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
       id: "doctor:auth-profiles",
       label: "Auth profiles",
       run: runAuthProfileHealth,
+    }),
+    createDoctorHealthContribution({
+      id: "doctor:claude-cli",
+      label: "Claude CLI",
+      run: runClaudeCliHealth,
     }),
     createDoctorHealthContribution({
       id: "doctor:gateway-auth",

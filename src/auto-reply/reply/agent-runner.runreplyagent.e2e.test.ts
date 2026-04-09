@@ -156,6 +156,7 @@ function createMinimalRun(params?: {
       },
       timeoutMs: 1_000,
       blockReplyBreak: "message_end",
+      skipProviderRuntimeHints: process.env.OPENCLAW_TEST_FAST === "1",
       ...params?.runOverrides,
     },
   } as unknown as FollowupRun;
@@ -449,6 +450,12 @@ describe("runReplyAgent typing (heartbeat)", () => {
         partials: ["No", "No, that is valid"],
         finalText: "No, that is valid",
         expectedForwarded: ["No", "No, that is valid"],
+        shouldType: true,
+      },
+      {
+        partials: ["NO_REPLYThe user is saying hello"],
+        finalText: "NO_REPLYThe user is saying hello",
+        expectedForwarded: ["The user is saying hello"],
         shouldType: true,
       },
     ] as const;
@@ -1753,7 +1760,7 @@ describe("runReplyAgent memory flush", () => {
       const baseRun = createBaseRun({
         storePath,
         sessionEntry,
-        runOverrides: { provider: "openai" },
+        runOverrides: { provider: "codex-cli" },
       });
 
       await runReplyAgentWithBase({

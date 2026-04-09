@@ -23,7 +23,7 @@ const getConfigValueAtPathMock = vi.hoisted(() => vi.fn());
 const parseConfigPathMock = vi.hoisted(() => vi.fn());
 const setConfigValueAtPathMock = vi.hoisted(() => vi.fn());
 const resolveConfigWriteDeniedTextMock = vi.hoisted(() =>
-  vi.fn<() => string | undefined>(() => undefined),
+  vi.fn<(...args: never[]) => string | null>(() => null),
 );
 const isInternalMessageChannelMock = vi.hoisted(() => vi.fn(() => false));
 

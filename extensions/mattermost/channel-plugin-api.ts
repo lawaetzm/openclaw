@@ -1,3 +1,4 @@
 // Keep bundled channel entry imports narrow so bootstrap/discovery paths do
-// not reach into source-only paths that are not emitted in production builds.
-export { mattermostPlugin } from "./src/channel.js";
+// not drag the broader Mattermost helper surfaces into lightweight plugin loads.
+export { mattermostPlugin } from "./channel-plugin-runtime.js";
+export { mattermostSetupPlugin } from "./src/channel.setup.js";

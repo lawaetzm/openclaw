@@ -19,10 +19,6 @@ import {
 } from "../config/config.js";
 import type { PluginOrigin } from "../plugins/types.js";
 import { resolveUserPath } from "../utils.js";
-import {
-  collectCommandSecretAssignmentsFromSnapshot,
-  type CommandSecretAssignment,
-} from "./command-config.js";
 import { type SecretResolverWarning } from "./runtime-shared.js";
 import {
   clearActiveRuntimeWebToolsMetadata,
@@ -168,6 +164,16 @@ function mergeSecretsRuntimeEnv(
   return merged;
 }
 
+function hasConfiguredPluginEntries(config: OpenClawConfig): boolean {
+  const entries = config.plugins?.entries;
+  return (
+    !!entries &&
+    typeof entries === "object" &&
+    !Array.isArray(entries) &&
+    Object.keys(entries).length > 0
+  );
+}
+
 export async function prepareSecretsRuntimeSnapshot(params: {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
@@ -190,7 +196,9 @@ export async function prepareSecretsRuntimeSnapshot(params: {
   const resolvedConfig = structuredClone(params.config);
   const loadablePluginOrigins =
     params.loadablePluginOrigins ??
-    (await resolveLoadablePluginOrigins({ config: sourceConfig, env: runtimeEnv }));
+    (hasConfiguredPluginEntries(sourceConfig)
+      ? await resolveLoadablePluginOrigins({ config: sourceConfig, env: runtimeEnv })
+      : new Map<string, PluginOrigin>());
   const context = createResolverContext({
     sourceConfig,
     env: runtimeEnv,
@@ -300,37 +308,6 @@ export function getActiveSecretsRuntimeSnapshot(): PreparedSecretsRuntimeSnapsho
 
 export function getActiveRuntimeWebToolsMetadata(): RuntimeWebToolsMetadata | null {
   return getActiveRuntimeWebToolsMetadataFromState();
-}
-
-export function resolveCommandSecretsFromActiveRuntimeSnapshot(params: {
-  commandName: string;
-  targetIds: ReadonlySet<string>;
-}): { assignments: CommandSecretAssignment[]; diagnostics: string[]; inactiveRefPaths: string[] } {
-  if (!activeSnapshot) {
-    throw new Error("Secrets runtime snapshot is not active.");
-  }
-  if (params.targetIds.size === 0) {
-    return { assignments: [], diagnostics: [], inactiveRefPaths: [] };
-  }
-  const inactiveRefPaths = [
-    ...new Set(
-      activeSnapshot.warnings
-        .filter((warning) => warning.code === "SECRETS_REF_IGNORED_INACTIVE_SURFACE")
-        .map((warning) => warning.path),
-    ),
-  ];
-  const resolved = collectCommandSecretAssignmentsFromSnapshot({
-    sourceConfig: activeSnapshot.sourceConfig,
-    resolvedConfig: activeSnapshot.config,
-    commandName: params.commandName,
-    targetIds: params.targetIds,
-    inactiveRefPaths: new Set(inactiveRefPaths),
-  });
-  return {
-    assignments: resolved.assignments,
-    diagnostics: resolved.diagnostics,
-    inactiveRefPaths,
-  };
 }
 
 export function clearSecretsRuntimeSnapshot(): void {
