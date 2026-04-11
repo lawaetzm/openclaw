@@ -48,7 +48,21 @@ export function hasFollowthroughEvidence(allPayloadTexts: string): boolean {
   return FOLLOWTHROUGH_EVIDENCE.some((pattern) => pattern.test(allPayloadTexts));
 }
 
-export function appendUnfulfilledDelegationNote(payloads: ReplyPayload[]): ReplyPayload[] {
+export interface DelegationGuardOptions {
+  /** If true, the model made tool calls (exec, sessions_send, etc.) in this turn,
+   *  so delegation commitments are likely being followed through via tool execution. */
+  hasActiveToolCalls?: boolean;
+}
+
+export function appendUnfulfilledDelegationNote(
+  payloads: ReplyPayload[],
+  options?: DelegationGuardOptions,
+): ReplyPayload[] {
+  // If the model made tool calls in this turn, delegation is being executed — skip guard
+  if (options?.hasActiveToolCalls) {
+    return payloads;
+  }
+
   const allText = payloads
     .filter((p) => !p.isError && typeof p.text === "string")
     .map((p) => p.text)

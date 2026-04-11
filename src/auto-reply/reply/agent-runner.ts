@@ -633,8 +633,13 @@ export async function runReplyAgent(params: {
         typeof payload.text === "string" &&
         hasDelegationCommitment(payload.text),
     );
+    // If the agent used messaging tools (sessions_send, slack, etc.) or exec,
+    // delegation commitments are being followed through via tool calls — skip guard
+    const hasActiveToolCalls =
+      (runResult.messagingToolSentTexts?.length ?? 0) > 0 ||
+      (runResult.messagingToolSentTargets?.length ?? 0) > 0;
     const guardedReplyPayloads = hasDelegationPromise
-      ? appendUnfulfilledDelegationNote(reminderGuardedPayloads)
+      ? appendUnfulfilledDelegationNote(reminderGuardedPayloads, { hasActiveToolCalls })
       : reminderGuardedPayloads;
 
     await signalTypingIfNeeded(guardedReplyPayloads, typingSignals);
