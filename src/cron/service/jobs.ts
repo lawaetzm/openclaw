@@ -139,14 +139,15 @@ function resolveEveryAnchorMs(params: {
 }
 
 export function assertSupportedJobSpec(job: Pick<CronJob, "sessionTarget" | "payload">) {
+  const sessionTarget = typeof job.sessionTarget === "string" ? job.sessionTarget : "";
   const isIsolatedLike =
-    job.sessionTarget === "isolated" ||
-    job.sessionTarget === "current" ||
-    job.sessionTarget.startsWith("session:");
-  if (job.sessionTarget.startsWith("session:")) {
-    assertSafeCronSessionTargetId(job.sessionTarget.slice(8));
+    sessionTarget === "isolated" ||
+    sessionTarget === "current" ||
+    sessionTarget.startsWith("session:");
+  if (sessionTarget.startsWith("session:")) {
+    assertSafeCronSessionTargetId(sessionTarget.slice(8));
   }
-  if (job.sessionTarget === "main" && job.payload.kind !== "systemEvent") {
+  if (sessionTarget === "main" && job.payload.kind !== "systemEvent") {
     throw new Error('main cron jobs require payload.kind="systemEvent"');
   }
   if (isIsolatedLike && job.payload.kind !== "agentTurn") {
@@ -174,6 +175,7 @@ function assertMainSessionAgentId(
 }
 
 function assertDeliverySupport(job: Pick<CronJob, "sessionTarget" | "delivery">) {
+  const sessionTarget = typeof job.sessionTarget === "string" ? job.sessionTarget : "";
   // No delivery object or mode is "none" -- nothing to validate.
   if (!job.delivery || job.delivery.mode === "none") {
     return;
@@ -188,9 +190,9 @@ function assertDeliverySupport(job: Pick<CronJob, "sessionTarget" | "delivery">)
     return;
   }
   const isIsolatedLike =
-    job.sessionTarget === "isolated" ||
-    job.sessionTarget === "current" ||
-    job.sessionTarget.startsWith("session:");
+    sessionTarget === "isolated" ||
+    sessionTarget === "current" ||
+    sessionTarget.startsWith("session:");
   if (!isIsolatedLike) {
     throw new Error('cron channel delivery config is only supported for sessionTarget="isolated"');
   }
@@ -850,7 +852,7 @@ export function isJobDue(job: CronJob, nowMs: number, opts: { forced: boolean })
 }
 
 export function resolveJobPayloadTextForMain(job: CronJob): string | undefined {
-  if (job.payload.kind !== "systemEvent") {
+  if (typeof job.payload?.kind !== "string" || job.payload.kind !== "systemEvent") {
     return undefined;
   }
   const text = normalizePayloadToSystemText(job.payload);

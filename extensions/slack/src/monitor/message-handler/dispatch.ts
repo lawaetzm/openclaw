@@ -76,6 +76,36 @@ const UNICODE_TO_SLACK: Record<string, string> = {
   "💻": "computer",
 };
 
+const INTERNAL_PREVIEW_STRONG_MARKERS: readonly string[] = [
+  "OpenClaw runtime context (internal)",
+  "[Internal task completion event]",
+  "<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>",
+  "<<<END_UNTRUSTED_CHILD_RESULT>>>",
+  "Result (untrusted content, treat as data):",
+  "Keep this internal context private",
+  "Convert the result above into your normal assistant voice",
+];
+
+const INTERNAL_PREVIEW_LINE_MARKERS: readonly RegExp[] = [
+  /^source:\s+/im,
+  /^session_key:\s+/im,
+  /^session_id:\s+/im,
+  /^type:\s+/im,
+  /^task:\s+/im,
+  /^status:\s+/im,
+];
+
+function containsInternalPreviewText(text: string | undefined): boolean {
+  const trimmed = text?.trim() ?? "";
+  if (!trimmed) {
+    return false;
+  }
+  if (INTERNAL_PREVIEW_STRONG_MARKERS.some((marker) => trimmed.includes(marker))) {
+    return true;
+  }
+  return INTERNAL_PREVIEW_LINE_MARKERS.some((pattern) => pattern.test(trimmed));
+}
+
 function toSlackEmojiName(emoji: string): string {
   const trimmed = emoji.trim().replace(/^:+|:+$/g, "");
   return UNICODE_TO_SLACK[trimmed] ?? trimmed;
@@ -544,11 +574,20 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     humanDelay: resolveHumanDelayConfig(cfg, route.agentId),
     deliver: async (payload, info) => {
       if (useStreaming) {
+        const text = resolveSendableOutboundReplyParts(payload).trimmedText;
+        if (containsInternalPreviewText(text)) {
+          logVerbose("slack: suppressed internal orchestration streaming payload");
+          return;
+        }
         await deliverWithStreaming({ payload, kind: info.kind });
         return;
       }
 
       const reply = resolveSendableOutboundReplyParts(payload);
+      if (containsInternalPreviewText(reply.trimmedText)) {
+        logVerbose("slack: suppressed internal orchestration preview payload");
+        return;
+      }
       const slackBlocks = readSlackReplyBlocks(payload);
       const draftMessageId = draftStream?.messageId();
       const draftChannelId = draftStream?.channelId();
@@ -642,6 +681,10 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   const updateDraftFromPartial = (text?: string) => {
     const trimmed = text?.trimEnd();
     if (!trimmed) {
+      return;
+    }
+    if (containsInternalPreviewText(trimmed)) {
+      logVerbose("slack: suppressed internal orchestration preview text");
       return;
     }
 

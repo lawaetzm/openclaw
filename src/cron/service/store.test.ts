@@ -189,4 +189,50 @@ describe("cron service store seam coverage", () => {
       expect.stringContaining("invalid persisted sessionTarget"),
     );
   });
+
+  it("normalizes legacy message-only jobs in memory without rewriting the store", async () => {
+    const { storePath } = await makeStorePath();
+
+    await writeSingleJobStore(storePath, {
+      id: "legacy-message-job",
+      name: " legacy message job ",
+      createdAtMs: STORE_TEST_NOW - 60_000,
+      updatedAtMs: STORE_TEST_NOW - 60_000,
+      schedule: { kind: "every", everyMs: 60_000 },
+      message: "  ping legacy  ",
+      model: " minimax/MiniMax-M2.7 ",
+      thinking: " high ",
+      session: { label: " agent:main:cron:legacy-message-job " },
+      state: {},
+    });
+
+    const state = createStoreTestState(storePath);
+
+    await ensureLoaded(state);
+
+    const job = state.store?.jobs[0];
+    expect(job).toBeDefined();
+    expect(job?.enabled).toBe(true);
+    expect(job?.name).toBe("legacy message job");
+    expect(job?.sessionKey).toBe("agent:main:cron:legacy-message-job");
+    expect(job?.sessionTarget).toBe("isolated");
+    expect(job?.wakeMode).toBe("now");
+    expect(job?.delivery).toMatchObject({ mode: "announce" });
+    expect(job?.state.nextRunAtMs).toBe(STORE_TEST_NOW);
+    expect(job?.payload.kind).toBe("agentTurn");
+    if (job?.payload.kind === "agentTurn") {
+      expect(job.payload.message).toBe("ping legacy");
+      expect(job.payload.model).toBe("minimax/MiniMax-M2.7");
+      expect(job.payload.thinking).toBe("high");
+    }
+
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as {
+      jobs: Array<Record<string, unknown>>;
+    };
+    expect(persisted.jobs[0]?.payload).toBeUndefined();
+    expect(persisted.jobs[0]?.message).toBe("  ping legacy  ");
+    expect(persisted.jobs[0]?.session).toEqual({
+      label: " agent:main:cron:legacy-message-job ",
+    });
+  });
 });

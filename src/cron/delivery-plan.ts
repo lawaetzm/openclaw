@@ -68,11 +68,13 @@ export function resolveCronDeliveryPlan(job: CronJob): CronDeliveryPlan {
     };
   }
 
+  const payloadKind = typeof job.payload?.kind === "string" ? job.payload.kind : undefined;
+  const sessionTarget = typeof job.sessionTarget === "string" ? job.sessionTarget : "";
   const isIsolatedAgentTurn =
-    job.payload.kind === "agentTurn" &&
-    (job.sessionTarget === "isolated" ||
-      job.sessionTarget === "current" ||
-      job.sessionTarget.startsWith("session:"));
+    payloadKind === "agentTurn" &&
+    (sessionTarget === "isolated" ||
+      sessionTarget === "current" ||
+      sessionTarget.startsWith("session:"));
   const resolvedMode = isIsolatedAgentTurn ? "announce" : "none";
 
   return {

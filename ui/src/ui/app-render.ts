@@ -1587,6 +1587,20 @@ export function renderApp(state: AppViewState) {
                   }
                   void refreshVisibleToolsEffectiveForCurrentSession(state);
                 },
+                onThinkingDefaultChange: (agentId, thinkingDefault) => {
+                  const index = thinkingDefault
+                    ? ensureAgentIndex(agentId)
+                    : findAgentIndex(agentId);
+                  if (index < 0) {
+                    return;
+                  }
+                  const path = ["agents", "list", index, "thinkingDefault"];
+                  if (!thinkingDefault) {
+                    removeConfigFormValue(state, path);
+                    return;
+                  }
+                  updateConfigFormValue(state, path, thinkingDefault);
+                },
                 onModelFallbacksChange: (agentId, fallbacks) => {
                   const normalized = fallbacks.map((name) => name.trim()).filter(Boolean);
                   const currentConfig = getCurrentConfigValue();

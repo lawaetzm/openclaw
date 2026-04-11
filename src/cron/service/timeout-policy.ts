@@ -14,12 +14,14 @@ export const DEFAULT_JOB_TIMEOUT_MS = 10 * 60_000; // 10 minutes
 export const AGENT_TURN_SAFETY_TIMEOUT_MS = 60 * 60_000; // 60 minutes
 
 export function resolveCronJobTimeoutMs(job: CronJob): number | undefined {
+  const payloadKind = typeof job.payload?.kind === "string" ? job.payload.kind : undefined;
+  const payload = payloadKind === "agentTurn" && "message" in job.payload ? job.payload : undefined;
   const configuredTimeoutMs =
-    job.payload.kind === "agentTurn" && typeof job.payload.timeoutSeconds === "number"
-      ? Math.floor(job.payload.timeoutSeconds * 1_000)
+    payload && typeof payload.timeoutSeconds === "number"
+      ? Math.floor(payload.timeoutSeconds * 1_000)
       : undefined;
   if (configuredTimeoutMs === undefined) {
-    return job.payload.kind === "agentTurn" ? AGENT_TURN_SAFETY_TIMEOUT_MS : DEFAULT_JOB_TIMEOUT_MS;
+    return payload ? AGENT_TURN_SAFETY_TIMEOUT_MS : DEFAULT_JOB_TIMEOUT_MS;
   }
   return configuredTimeoutMs <= 0 ? undefined : configuredTimeoutMs;
 }

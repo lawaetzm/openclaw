@@ -166,6 +166,7 @@ type AgentConfigEntry = {
   workspace?: string;
   agentDir?: string;
   model?: unknown;
+  thinkingDefault?: string;
   skills?: string[];
   tools?: {
     profile?: string;
@@ -177,7 +178,12 @@ type AgentConfigEntry = {
 
 type ConfigSnapshot = {
   agents?: {
-    defaults?: { workspace?: string; model?: unknown; models?: Record<string, { alias?: string }> };
+    defaults?: {
+      workspace?: string;
+      model?: unknown;
+      models?: Record<string, { alias?: string }>;
+      thinkingDefault?: string;
+    };
     list?: AgentConfigEntry[];
   };
   tools?: {

@@ -33,6 +33,7 @@ export function renderAgentOverview(params: {
   onConfigReload: () => void;
   onConfigSave: () => void;
   onModelChange: (agentId: string, modelId: string | null) => void;
+  onThinkingDefaultChange: (agentId: string, thinkingDefault: string | null) => void;
   onModelFallbacksChange: (agentId: string, fallbacks: string[]) => void;
   onSelectPanel: (panel: AgentsPanel) => void;
 }) {
@@ -46,6 +47,7 @@ export function renderAgentOverview(params: {
     onConfigReload,
     onConfigSave,
     onModelChange,
+    onThinkingDefaultChange,
     onModelFallbacksChange,
     onSelectPanel,
   } = params;
@@ -76,10 +78,25 @@ export function renderAgentOverview(params: {
     resolveModelFallbacks(config.defaults?.model) ??
     (configForm ? null : resolveModelFallbacks(agentModel));
   const fallbackChips = modelFallbacks ?? [];
+  const entryThinking =
+    typeof config.entry?.thinkingDefault === "string" ? config.entry.thinkingDefault : null;
+  const defaultThinking =
+    typeof config.defaults?.thinkingDefault === "string" ? config.defaults.thinkingDefault : null;
   const skillFilter = Array.isArray(config.entry?.skills) ? config.entry?.skills : null;
   const skillCount = skillFilter?.length ?? null;
   const isDefault = Boolean(params.defaultId && agent.id === params.defaultId);
   const disabled = !configForm || configLoading || configSaving;
+  const thinkingOptions = [
+    { value: "off", label: "Off" },
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "XHigh" },
+    { value: "adaptive", label: "Adaptive" },
+  ];
+  const hasCurrentThinkingOption =
+    entryThinking !== null && !thinkingOptions.some((option) => option.value === entryThinking);
 
   const removeChip = (index: number) => {
     const next = fallbackChips.filter((_, i) => i !== index);
@@ -154,6 +171,28 @@ export function renderAgentOverview(params: {
                     </option>
                   `}
               ${buildModelOptions(configForm, effectivePrimary ?? undefined, params.modelCatalog)}
+            </select>
+          </label>
+          <label class="field">
+            <span>Thinking default</span>
+            <select
+              data-agent-thinking-default
+              .value=${entryThinking ?? ""}
+              ?disabled=${disabled}
+              @change=${(e: Event) =>
+                onThinkingDefaultChange(agent.id, (e.target as HTMLSelectElement).value || null)}
+            >
+              <option value="">
+                ${defaultThinking
+                  ? `Inherit default (${defaultThinking})`
+                  : "Inherit global / model default"}
+              </option>
+              ${hasCurrentThinkingOption
+                ? html`<option value=${entryThinking}>Current (${entryThinking})</option>`
+                : nothing}
+              ${thinkingOptions.map(
+                (option) => html`<option value=${option.value}>${option.label}</option>`,
+              )}
             </select>
           </label>
           <div class="field">

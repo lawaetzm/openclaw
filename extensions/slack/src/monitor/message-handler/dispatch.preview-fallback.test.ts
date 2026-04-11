@@ -7,17 +7,19 @@ const SAME_TEXT = "same reply";
 const createSlackDraftStreamMock = vi.fn();
 const deliverRepliesMock = vi.fn(async () => {});
 const finalizeSlackPreviewEditMock = vi.fn(async () => {});
+const draftUpdateMock = vi.fn();
 let mockedDispatchSequence: Array<{
   kind: "tool" | "block" | "final";
   payload: { text: string };
 }> = [];
+let mockedPartialReplies: Array<{ text: string }> = [];
 
 const noop = () => {};
 const noopAsync = async () => {};
 
 function createDraftStreamStub() {
   return {
-    update: noop,
+    update: draftUpdateMock,
     flush: noopAsync,
     clear: noopAsync,
     stop: noop,
@@ -223,6 +225,7 @@ vi.mock("../replies.js", () => ({
 vi.mock("../reply.runtime.js", () => ({
   createReplyDispatcherWithTyping: (params: {
     deliver: (payload: unknown, info: { kind: "tool" | "block" | "final" }) => Promise<void>;
+    onPartialReply?: (payload: { text?: string }) => Promise<void>;
   }) => ({
     dispatcher: {
       deliver: params.deliver,
@@ -237,7 +240,13 @@ vi.mock("../reply.runtime.js", () => ({
         info: { kind: "tool" | "block" | "final" },
       ) => Promise<void>;
     };
+    replyOptions?: {
+      onPartialReply?: (payload: { text?: string }) => Promise<void>;
+    };
   }) => {
+    for (const entry of mockedPartialReplies) {
+      await params.replyOptions?.onPartialReply?.(entry);
+    }
     for (const entry of mockedDispatchSequence) {
       await params.dispatcher.deliver(entry.payload, { kind: entry.kind });
     }
@@ -265,7 +274,9 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     createSlackDraftStreamMock.mockReset();
     deliverRepliesMock.mockReset();
     finalizeSlackPreviewEditMock.mockReset();
+    draftUpdateMock.mockReset();
     mockedDispatchSequence = [{ kind: "final", payload: { text: FINAL_REPLY_TEXT } }];
+    mockedPartialReplies = [];
 
     createSlackDraftStreamMock.mockReturnValue(createDraftStreamStub());
     finalizeSlackPreviewEditMock.mockRejectedValue(new Error("socket closed"));
@@ -308,5 +319,23 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         replies: [expect.objectContaining({ text: SAME_TEXT })],
       }),
     );
+  });
+
+  it("does not stream internal orchestration markers into the Slack preview draft", async () => {
+    mockedPartialReplies = [
+      {
+        text: [
+          "OpenClaw runtime context (internal):",
+          "[Internal task completion event]",
+          "session_key: agent:main:subagent:test",
+        ].join("\n"),
+      },
+      { text: "Visible progress update" },
+    ];
+
+    await dispatchPreparedSlackMessage(createPreparedSlackMessage());
+
+    expect(draftUpdateMock).toHaveBeenCalledTimes(1);
+    expect(draftUpdateMock).toHaveBeenCalledWith("Visible progress update");
   });
 });

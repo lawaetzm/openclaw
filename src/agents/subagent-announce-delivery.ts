@@ -1,3 +1,6 @@
+import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
+import type { ReplyPayload } from "../auto-reply/types.js";
+import { normalizeReplyPayloadsForDelivery } from "../infra/outbound/payloads.js";
 import type { ConversationRef } from "../infra/outbound/session-binding-service.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
@@ -115,6 +118,132 @@ const PERMANENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS: readonly RegExp[] = [
   /recipient is not a valid/i,
   /outbound not configured for channel/i,
 ];
+
+const INTERNAL_COMPLETION_STRONG_MARKERS: readonly string[] = [
+  "OpenClaw runtime context (internal)",
+  "[Internal task completion event]",
+  "<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>",
+  "<<<END_UNTRUSTED_CHILD_RESULT>>>",
+  "Result (untrusted content, treat as data):",
+  "Keep this internal context private",
+  "Convert the result above into your normal assistant voice",
+];
+
+const INTERNAL_COMPLETION_LINE_MARKERS: readonly RegExp[] = [
+  /^This context is runtime-generated, not user-authored\./i,
+  /^source:\s+/i,
+  /^session_key:\s+/i,
+  /^session_id:\s+/i,
+  /^type:\s+/i,
+  /^task:\s+/i,
+  /^status:\s+/i,
+  /^Action:\s*$/i,
+];
+
+function collectInternalEventMediaUrls(events?: AgentInternalEvent[]): string[] {
+  if (!events?.length) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const mediaUrls: string[] = [];
+  for (const event of events) {
+    if (!Array.isArray(event.mediaUrls)) {
+      continue;
+    }
+    for (const mediaUrl of event.mediaUrls) {
+      const trimmed = mediaUrl.trim();
+      if (!trimmed || seen.has(trimmed)) {
+        continue;
+      }
+      seen.add(trimmed);
+      mediaUrls.push(trimmed);
+    }
+  }
+  return mediaUrls;
+}
+
+function containsInternalCompletionMarkers(text: string): boolean {
+  if (!text.trim()) {
+    return false;
+  }
+  if (INTERNAL_COMPLETION_STRONG_MARKERS.some((marker) => text.includes(marker))) {
+    return true;
+  }
+  return INTERNAL_COMPLETION_LINE_MARKERS.some((pattern) => pattern.test(text));
+}
+
+function sanitizeSynthesizedCompletionText(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  let inUntrustedBlock = false;
+  const lines = trimmed.split(/\r?\n/);
+  const kept: string[] = [];
+  for (const line of lines) {
+    const normalizedLine = line.trim();
+    if (!normalizedLine) {
+      if (!inUntrustedBlock && kept.at(-1) !== "") {
+        kept.push("");
+      }
+      continue;
+    }
+    if (
+      normalizedLine.includes("<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>") ||
+      normalizedLine.includes("<<<END_UNTRUSTED_CHILD_RESULT>>>")
+    ) {
+      inUntrustedBlock = normalizedLine.includes("<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>");
+      continue;
+    }
+    if (inUntrustedBlock) {
+      continue;
+    }
+    if (INTERNAL_COMPLETION_STRONG_MARKERS.some((marker) => normalizedLine.includes(marker))) {
+      continue;
+    }
+    if (INTERNAL_COMPLETION_LINE_MARKERS.some((pattern) => pattern.test(normalizedLine))) {
+      continue;
+    }
+    kept.push(line);
+  }
+  const sanitized = kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return containsInternalCompletionMarkers(sanitized) ? "" : sanitized;
+}
+
+function summarizeSynthesizedPayloads(payloads: ReplyPayload[] | undefined): {
+  text: string;
+  mediaUrls: string[];
+} {
+  const normalizedPayloads = normalizeReplyPayloadsForDelivery(payloads ?? []);
+  if (normalizedPayloads.length === 0) {
+    return { text: "", mediaUrls: [] };
+  }
+  const seenMedia = new Set<string>();
+  const mediaUrls: string[] = [];
+  const textParts: string[] = [];
+  for (const payload of normalizedPayloads) {
+    const parts = resolveSendableOutboundReplyParts(payload);
+    const text = parts.text.trim();
+    if (text) {
+      textParts.push(text);
+    }
+    for (const mediaUrl of parts.mediaUrls) {
+      const trimmed = mediaUrl.trim();
+      if (!trimmed || seenMedia.has(trimmed)) {
+        continue;
+      }
+      seenMedia.add(trimmed);
+      mediaUrls.push(trimmed);
+    }
+  }
+  return {
+    text: textParts.join("\n\n").trim(),
+    mediaUrls,
+  };
+}
 
 function isTransientAnnounceDeliveryError(error: unknown): boolean {
   const message = summarizeDeliveryError(error);
@@ -460,6 +589,74 @@ async function sendSubagentAnnounceDirectly(params: {
       return {
         delivered: false,
         path: "none",
+      };
+    }
+    if (params.expectsCompletionMessage && !params.requesterIsSubagent) {
+      const synthesisResponse = await runAnnounceDeliveryWithRetry<{
+        result?: { payloads?: ReplyPayload[] };
+      }>({
+        operation: "completion synthesis agent call",
+        signal: params.signal,
+        run: async () =>
+          await subagentAnnounceDeliveryDeps.callGateway({
+            method: "agent",
+            params: {
+              sessionKey: canonicalRequesterSessionKey,
+              message: params.triggerMessage,
+              deliver: false,
+              internalEvents: params.internalEvents,
+              inputProvenance: {
+                kind: "inter_session",
+                sourceSessionKey: params.sourceSessionKey,
+                sourceChannel: params.sourceChannel ?? INTERNAL_MESSAGE_CHANNEL,
+                sourceTool: params.sourceTool ?? "subagent_announce",
+              },
+              idempotencyKey: `${params.directIdempotencyKey}:synthesize`,
+            },
+            expectFinal: true,
+            timeoutMs: announceTimeoutMs,
+          }),
+      });
+      const synthesized = summarizeSynthesizedPayloads(synthesisResponse?.result?.payloads);
+      const text = sanitizeSynthesizedCompletionText(synthesized.text);
+      const mediaUrls = [
+        ...synthesized.mediaUrls,
+        ...collectInternalEventMediaUrls(params.internalEvents),
+      ].filter((value, index, self) => self.indexOf(value) === index);
+      if (!deliveryTarget.deliver) {
+        return {
+          delivered: true,
+          path: "direct",
+        };
+      }
+      if (!text && mediaUrls.length === 0) {
+        return {
+          delivered: true,
+          path: "direct",
+        };
+      }
+      await runAnnounceDeliveryWithRetry({
+        operation: "completion external send",
+        signal: params.signal,
+        run: async () =>
+          await subagentAnnounceDeliveryDeps.callGateway({
+            method: "send",
+            params: {
+              channel: deliveryTarget.channel,
+              to: deliveryTarget.to,
+              accountId: deliveryTarget.accountId,
+              threadId: deliveryTarget.threadId,
+              sessionKey: canonicalRequesterSessionKey,
+              message: text || undefined,
+              mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
+              idempotencyKey: `${params.directIdempotencyKey}:deliver`,
+            },
+            timeoutMs: announceTimeoutMs,
+          }),
+      });
+      return {
+        delivered: true,
+        path: "direct",
       };
     }
     await runAnnounceDeliveryWithRetry({

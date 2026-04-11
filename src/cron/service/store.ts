@@ -41,7 +41,7 @@ export async function ensureLoaded(
     const { legacyJobIdIssue } = normalizeCronJobIdentityFields(raw);
     let normalized: Record<string, unknown> | null;
     try {
-      normalized = normalizeCronJobInput(raw);
+      normalized = normalizeCronJobInput(raw, { applyDefaults: true });
     } catch (error) {
       if (!isInvalidCronSessionTargetIdError(error)) {
         throw error;

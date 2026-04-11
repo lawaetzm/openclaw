@@ -384,6 +384,7 @@ function copyTopLevelAgentTurnFields(next: UnknownRecord, payload: UnknownRecord
 }
 
 function stripLegacyTopLevelFields(next: UnknownRecord) {
+  delete next.session;
   delete next.model;
   delete next.thinking;
   delete next.timeoutSeconds;
@@ -437,6 +438,12 @@ export function normalizeCronJobInput(
       } else {
         delete next.sessionKey;
       }
+    }
+  }
+  if (!("sessionKey" in next) && isRecord(base.session)) {
+    const legacySessionLabel = normalizeOptionalString(base.session.label);
+    if (legacySessionLabel) {
+      next.sessionKey = legacySessionLabel;
     }
   }
 

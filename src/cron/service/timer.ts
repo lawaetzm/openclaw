@@ -1153,13 +1153,15 @@ async function executeMainSessionCronJob(
 > {
   const text = resolveJobPayloadTextForMain(job);
   if (!text) {
-    const kind = job.payload.kind;
+    const kind = typeof job.payload?.kind === "string" ? job.payload.kind : undefined;
     return {
       status: "skipped",
       error:
-        kind === "systemEvent"
-          ? "main job requires non-empty systemEvent text"
-          : 'main job requires payload.kind="systemEvent"',
+        kind === undefined
+          ? "cron job payload is missing or invalid"
+          : kind === "systemEvent"
+            ? "main job requires non-empty systemEvent text"
+            : 'main job requires payload.kind="systemEvent"',
     };
   }
   const targetMainSessionKey = job.sessionKey;
@@ -1245,8 +1247,20 @@ async function executeDetachedCronJob(
 ): Promise<
   CronRunOutcome & CronRunTelemetry & { delivered?: boolean; deliveryAttempted?: boolean }
 > {
-  if (job.payload.kind !== "agentTurn") {
-    return { status: "skipped", error: "isolated job requires payload.kind=agentTurn" };
+  const payloadKind = typeof job.payload?.kind === "string" ? job.payload.kind : undefined;
+  const payload = payloadKind === "agentTurn" && "message" in job.payload ? job.payload : undefined;
+  if (payloadKind !== "agentTurn") {
+    return {
+      status: "skipped",
+      error:
+        payloadKind === undefined
+          ? "cron job payload is missing or invalid"
+          : "isolated job requires payload.kind=agentTurn",
+    };
+  }
+  const message = typeof payload?.message === "string" ? payload.message.trim() : "";
+  if (!message) {
+    return { status: "skipped", error: "isolated job requires non-empty agentTurn message" };
   }
   if (abortSignal?.aborted) {
     return resolveAbortError();
@@ -1254,7 +1268,7 @@ async function executeDetachedCronJob(
 
   const res = await state.deps.runIsolatedAgentJob({
     job,
-    message: job.payload.message,
+    message,
     abortSignal,
   });
 

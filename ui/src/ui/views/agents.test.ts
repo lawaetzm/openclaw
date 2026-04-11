@@ -1,5 +1,5 @@
 import { render } from "lit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderAgents, type AgentsProps } from "./agents.ts";
 
 function createSkill() {
@@ -107,6 +107,7 @@ function createProps(overrides: Partial<AgentsProps> = {}): AgentsProps {
     onConfigReload: () => undefined,
     onConfigSave: () => undefined,
     onModelChange: () => undefined,
+    onThinkingDefaultChange: () => undefined,
     onModelFallbacksChange: () => undefined,
     onChannelsRefresh: () => undefined,
     onCronRefresh: () => undefined,
@@ -178,5 +179,69 @@ describe("renderAgents", () => {
     );
 
     expect(skillsTab?.textContent?.trim()).toContain("1");
+  });
+
+  it("renders the agent thinking default picker with inherited default text", async () => {
+    const container = document.createElement("div");
+    render(
+      renderAgents(
+        createProps({
+          config: {
+            form: {
+              agents: {
+                defaults: { thinkingDefault: "off" },
+                list: [{ id: "beta", model: "openai/gpt-5.4" }],
+              },
+            },
+            loading: false,
+            saving: false,
+            dirty: false,
+          },
+        }),
+      ),
+      container,
+    );
+    await Promise.resolve();
+
+    const thinkingSelect = container.querySelector<HTMLSelectElement>(
+      "select[data-agent-thinking-default]",
+    );
+
+    expect(thinkingSelect).not.toBeNull();
+    expect(thinkingSelect?.options[0]?.textContent?.trim()).toBe("Inherit default (off)");
+  });
+
+  it("dispatches thinking default changes for the selected agent", async () => {
+    const onThinkingDefaultChange = vi.fn();
+    const container = document.createElement("div");
+    render(
+      renderAgents(
+        createProps({
+          config: {
+            form: {
+              agents: {
+                list: [{ id: "beta", model: "openai/gpt-5.4" }],
+              },
+            },
+            loading: false,
+            saving: false,
+            dirty: false,
+          },
+          onThinkingDefaultChange,
+        }),
+      ),
+      container,
+    );
+    await Promise.resolve();
+
+    const thinkingSelect = container.querySelector<HTMLSelectElement>(
+      "select[data-agent-thinking-default]",
+    );
+    expect(thinkingSelect).not.toBeNull();
+
+    thinkingSelect!.value = "high";
+    thinkingSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(onThinkingDefaultChange).toHaveBeenCalledWith("beta", "high");
   });
 });
