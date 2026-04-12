@@ -73,6 +73,7 @@ export const resolveOpenClawPackageRootSync = vi.fn().mockReturnValue(null) as u
 export const runGatewayUpdate = vi
   .fn()
   .mockResolvedValue(createGatewayUpdateResult()) as unknown as MockFn;
+export const collectRelevantDoctorPluginIds = vi.fn(() => []) as unknown as MockFn;
 export const listPluginDoctorLegacyConfigRules = vi.fn(() => []) as unknown as MockFn;
 export const runDoctorHealthContributions = vi.fn(
   defaultRunDoctorHealthContributions,
@@ -265,6 +266,16 @@ vi.mock("../config/config.js", async () => {
   };
 });
 
+vi.mock("../config/io.js", async () => {
+  const actual = await vi.importActual<typeof import("../config/io.js")>("../config/io.js");
+  return {
+    ...actual,
+    createConfigIO,
+    readConfigFileSnapshot,
+    writeConfigFile,
+  };
+});
+
 vi.mock("../daemon/legacy.js", () => ({
   findLegacyGatewayServices,
   uninstallLegacyGatewayServices,
@@ -352,6 +363,7 @@ vi.mock("./doctor-memory-search.js", () => ({
 }));
 
 vi.mock("../plugins/doctor-contract-registry.js", () => ({
+  collectRelevantDoctorPluginIds,
   listPluginDoctorLegacyConfigRules,
 }));
 
