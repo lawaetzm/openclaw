@@ -249,6 +249,31 @@ describe("subscribeEmbeddedPiSession", () => {
     expect(subscription.assistantTexts).toEqual(["Done."]);
   });
 
+  it("suppresses commentary text_end when phase exists only in textSignature", async () => {
+    const onBlockReply = vi.fn();
+    const { emit, subscription } = createTextEndBlockReplyHarness({ onBlockReply });
+
+    emit({ type: "message_start", message: { role: "assistant" } });
+    emitOpenAiResponsesTextEvent({
+      emit,
+      type: "text_delta",
+      text: "Working...",
+      id: "item_commentary",
+      signaturePhase: "commentary",
+    });
+    emitOpenAiResponsesTextEvent({
+      emit,
+      type: "text_end",
+      text: "Working...",
+      id: "item_commentary",
+      signaturePhase: "commentary",
+    });
+    await Promise.resolve();
+
+    expect(onBlockReply).not.toHaveBeenCalled();
+    expect(subscription.assistantTexts).toEqual([]);
+  });
+
   it("emits the final answer at message_end when commentary was streamed first", async () => {
     const onBlockReply = vi.fn();
     const { emit, subscription } = createTextEndBlockReplyHarness({ onBlockReply });

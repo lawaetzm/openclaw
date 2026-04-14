@@ -392,7 +392,14 @@ async function processResponsesStream(
         stream.push({ type: "thinking_start", contentIndex: blockIndex(), partial: output });
       } else if (item.type === "message") {
         currentItem = item;
-        currentBlock = { type: "text", text: "" };
+        currentBlock = {
+          type: "text",
+          text: "",
+          textSignature: encodeTextSignatureV1(
+            stringifyUnknown(item.id),
+            (item.phase as "commentary" | "final_answer" | undefined) ?? undefined,
+          ),
+        };
         output.content.push(currentBlock);
         stream.push({ type: "text_start", contentIndex: blockIndex(), partial: output });
       } else if (item.type === "function_call") {
@@ -1382,5 +1389,6 @@ function mapStopReason(reason: string | null) {
 }
 
 export const __testing = {
+  processResponsesStream,
   processOpenAICompletionsStream,
 };

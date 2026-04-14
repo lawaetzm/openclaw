@@ -1,9 +1,15 @@
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGateway } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import {
+  isSubagentSessionKey,
+  normalizeAgentId,
+  parseAgentSessionKey,
+  resolveAgentIdFromSessionKey,
+} from "../../routing/session-key.js";
 import { SESSION_LABEL_MAX_LENGTH } from "../../sessions/session-label.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import {
@@ -42,6 +48,21 @@ const SessionsSendToolSchema = Type.Object({
 
 type GatewayCaller = typeof callGateway;
 const SESSIONS_SEND_REPLY_HISTORY_LIMIT = 50;
+const AGENT_BUS_DELEGATE_SCRIPT = "/home/claw/.openclaw/shared/sessions_send_with_job.py";
+
+type AgentBusDelegationParams = {
+  fromAgent: string;
+  toAgent: string;
+  requesterSessionKey: string;
+  task: string;
+  timeoutSeconds: number;
+};
+
+type AgentBusDelegate = (
+  params: AgentBusDelegationParams,
+) => Promise<
+  { ok: true; result: Record<string, unknown> } | { ok: false; error: string; timeout?: boolean }
+>;
 
 async function startAgentRun(params: {
   callGateway: GatewayCaller;
@@ -74,12 +95,119 @@ async function startAgentRun(params: {
   }
 }
 
+function shouldUseAgentBusDelegation(params: {
+  requesterSessionKey?: string;
+  targetSessionKey: string;
+}): { enabled: boolean; fromAgent?: string; toAgent?: string } {
+  const requesterKey = params.requesterSessionKey?.trim() ?? "";
+  const requesterParsed = parseAgentSessionKey(requesterKey);
+  const targetParsed = parseAgentSessionKey(params.targetSessionKey);
+  if (!requesterParsed || !targetParsed) {
+    return { enabled: false };
+  }
+  if (isSubagentSessionKey(requesterKey) || isSubagentSessionKey(params.targetSessionKey)) {
+    return { enabled: false };
+  }
+  const fromAgent = normalizeAgentId(requesterParsed.agentId);
+  const toAgent = normalizeAgentId(targetParsed.agentId);
+  if (!fromAgent || !toAgent || fromAgent === toAgent) {
+    return { enabled: false };
+  }
+  return { enabled: true, fromAgent, toAgent };
+}
+
+function delegateToAgentBus(params: AgentBusDelegationParams): ReturnType<AgentBusDelegate> {
+  return new Promise((resolve) => {
+    const action = params.timeoutSeconds > 0 ? "delegate_and_wait" : "delegate";
+    const child = spawn("python3", [AGENT_BUS_DELEGATE_SCRIPT, "delegate-json"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      resolve({ ok: false, error: error.message || "agent-bus delegation failed" });
+    });
+    child.on("close", (code) => {
+      const out = stdout.trim();
+      let payload: Record<string, unknown> | undefined;
+      if (out) {
+        try {
+          payload = JSON.parse(out) as Record<string, unknown>;
+        } catch {
+          payload = undefined;
+        }
+      }
+      if (
+        code === 0 &&
+        payload?.ok === true &&
+        payload.result &&
+        typeof payload.result === "object"
+      ) {
+        resolve({ ok: true, result: payload.result as Record<string, unknown> });
+        return;
+      }
+      const errorText =
+        (typeof payload?.error === "string" && payload.error) ||
+        stderr.trim() ||
+        out ||
+        "agent-bus delegation failed";
+      resolve({
+        ok: false,
+        error: errorText,
+        timeout: /timed out waiting for result/i.test(errorText),
+      });
+    });
+    child.stdin.end(
+      JSON.stringify({
+        action,
+        from_agent: params.fromAgent,
+        to_agent: params.toAgent,
+        task: params.task,
+        requester_session_key: params.requesterSessionKey,
+        timeout: params.timeoutSeconds,
+      }),
+    );
+  });
+}
+
+function summarizeAgentBusResult(result: Record<string, unknown>): string | undefined {
+  const direct = result.result;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  if (direct && typeof direct === "object") {
+    const candidate =
+      typeof (direct as { summary?: unknown }).summary === "string"
+        ? (direct as { summary: string }).summary
+        : typeof (direct as { message?: unknown }).message === "string"
+          ? (direct as { message: string }).message
+          : typeof (direct as { note?: unknown }).note === "string"
+            ? (direct as { note: string }).note
+            : undefined;
+    if (candidate?.trim()) {
+      return candidate.trim();
+    }
+    return JSON.stringify(direct);
+  }
+  if (typeof result.error === "string" && result.error.trim()) {
+    return result.error.trim();
+  }
+  return undefined;
+}
+
 export function createSessionsSendTool(opts?: {
   agentSessionKey?: string;
   agentChannel?: GatewayMessageChannel;
   sandboxed?: boolean;
   config?: OpenClawConfig;
   callGateway?: GatewayCaller;
+  delegateToAgentBus?: AgentBusDelegate;
 }): AnyAgentTool {
   return {
     label: "Session Send",
@@ -236,6 +364,10 @@ export function createSessionsSendTool(opts?: {
       const announceTimeoutMs = timeoutSeconds === 0 ? 30_000 : timeoutMs;
       const idempotencyKey = crypto.randomUUID();
       let runId: string = idempotencyKey;
+      const busDelegation = shouldUseAgentBusDelegation({
+        requesterSessionKey: effectiveRequesterKey,
+        targetSessionKey: resolvedKey,
+      });
       const visibilityGuard = await createSessionVisibilityGuard({
         action: "send",
         requesterSessionKey: effectiveRequesterKey,
@@ -249,6 +381,57 @@ export function createSessionsSendTool(opts?: {
           status: access.status,
           error: access.error,
           sessionKey: displayKey,
+        });
+      }
+      if (busDelegation.enabled && busDelegation.fromAgent && busDelegation.toAgent) {
+        const busResult = await (opts?.delegateToAgentBus ?? delegateToAgentBus)({
+          fromAgent: busDelegation.fromAgent,
+          toAgent: busDelegation.toAgent,
+          requesterSessionKey: effectiveRequesterKey,
+          task: message,
+          timeoutSeconds,
+        });
+        if (!busResult.ok) {
+          return jsonResult({
+            runId: crypto.randomUUID(),
+            status: busResult.timeout ? "timeout" : "error",
+            error: busResult.error,
+            sessionKey: displayKey,
+          });
+        }
+        const delegatedJobId =
+          typeof busResult.result.job_id === "string"
+            ? busResult.result.job_id
+            : crypto.randomUUID();
+        if (timeoutSeconds === 0) {
+          return jsonResult({
+            runId: delegatedJobId,
+            status: "accepted",
+            sessionKey: displayKey,
+            jobId: delegatedJobId,
+            busResult: busResult.result,
+            delivery: { status: "accepted", mode: "agent_bus" as const },
+          });
+        }
+        const busReply = summarizeAgentBusResult(busResult.result);
+        const busStatus =
+          typeof busResult.result.status === "string"
+            ? busResult.result.status.toLowerCase()
+            : "ok";
+        return jsonResult({
+          runId: delegatedJobId,
+          status: busStatus === "failed" ? "error" : "ok",
+          error:
+            busStatus === "failed"
+              ? typeof busResult.result.error === "string"
+                ? busResult.result.error
+                : "agent bus delegation failed"
+              : undefined,
+          reply: busReply,
+          sessionKey: displayKey,
+          jobId: delegatedJobId,
+          busResult: busResult.result,
+          delivery: { status: "completed", mode: "agent_bus" as const },
         });
       }
 
@@ -371,3 +554,8 @@ export function createSessionsSendTool(opts?: {
     },
   };
 }
+
+export const __testing = {
+  shouldUseAgentBusDelegation,
+  summarizeAgentBusResult,
+};

@@ -690,6 +690,78 @@ describe("openai transport stream", () => {
     });
   });
 
+  it("surfaces commentary phase metadata on partial Codex Responses text blocks before text_end", async () => {
+    const model = {
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    } satisfies Model<"openai-codex-responses">;
+
+    const output = {
+      role: "assistant" as const,
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+    const events: Array<Record<string, unknown>> = [];
+    const stream = {
+      push: (event: unknown) => {
+        events.push(JSON.parse(JSON.stringify(event)) as Record<string, unknown>);
+      },
+    };
+    const mockEvents = [
+      {
+        type: "response.output_item.added",
+        item: {
+          type: "message",
+          id: "msg_commentary",
+          phase: "commentary",
+        },
+      },
+      {
+        type: "response.output_text.delta",
+        delta: "Working...",
+      },
+    ] as const;
+
+    async function* mockStream() {
+      for (const event of mockEvents) {
+        yield event as never;
+      }
+    }
+
+    await __testing.processResponsesStream(mockStream(), output, stream, model);
+
+    const textStartEvent = events.find((event) => event.type === "text_start");
+    expect(textStartEvent).toBeTruthy();
+    const textBlock = ((textStartEvent?.partial as { content?: Array<Record<string, unknown>> })
+      ?.content ?? [])[0];
+    expect(textBlock?.type).toBe("text");
+    expect(JSON.parse(String(textBlock?.textSignature))).toMatchObject({
+      v: 1,
+      id: "msg_commentary",
+      phase: "commentary",
+    });
+  });
+
   it("strips the internal cache boundary from OpenAI system prompts", () => {
     const params = buildOpenAIResponsesParams(
       {

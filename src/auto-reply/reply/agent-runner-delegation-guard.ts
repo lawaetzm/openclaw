@@ -23,6 +23,7 @@ const FOLLOWTHROUGH_EVIDENCE = [
   /create_job\s*\(/i,
   /delegate\s*\(/i,
   /delegate_and_wait\s*\(/i,
+  /agent[-_\s]?bus/i,
   /complete_job\s*\(/i,
   /fail_job\s*\(/i,
   /job\s+oprettet/i,
