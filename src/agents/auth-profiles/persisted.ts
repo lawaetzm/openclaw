@@ -22,6 +22,42 @@ type RejectedCredentialEntry = { key: string; reason: CredentialRejectReason };
 
 const AUTH_PROFILE_TYPES = new Set<AuthProfileCredential["type"]>(["api_key", "oauth", "token"]);
 
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split(".");
+  if (parts.length < 2 || !parts[1]) {
+    return null;
+  }
+  try {
+    const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    const parsed = JSON.parse(decoded);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function inferOAuthAccountId(entry: Record<string, unknown>): void {
+  if (
+    entry.type !== "oauth" ||
+    typeof entry.access !== "string" ||
+    (typeof entry.accountId === "string" && entry.accountId.trim().length > 0)
+  ) {
+    return;
+  }
+  const payload = decodeJwtPayload(entry.access);
+  const auth =
+    payload && typeof payload["https://api.openai.com/auth"] === "object"
+      ? (payload["https://api.openai.com/auth"] as Record<string, unknown>)
+      : null;
+  const accountId =
+    auth && typeof auth.chatgpt_account_id === "string" ? auth.chatgpt_account_id.trim() : "";
+  if (accountId) {
+    entry.accountId = accountId;
+  }
+}
+
 function normalizeSecretBackedField(params: {
   entry: Record<string, unknown>;
   valueField: "key" | "token";
@@ -48,6 +84,7 @@ function normalizeRawCredentialEntry(raw: Record<string, unknown>): Partial<Auth
   }
   normalizeSecretBackedField({ entry, valueField: "key", refField: "keyRef" });
   normalizeSecretBackedField({ entry, valueField: "token", refField: "tokenRef" });
+  inferOAuthAccountId(entry);
   return entry as Partial<AuthProfileCredential>;
 }
 
