@@ -269,7 +269,8 @@ async function runOpenAICodexOAuth(ctx: ProviderAuthContext) {
     refresh: creds.refresh,
     expires: creds.expires,
     email: identity.email,
-    profileName: identity.profileName,
+    displayName: identity.email ?? identity.profileName,
+    profileName: "default",
   });
 }
 

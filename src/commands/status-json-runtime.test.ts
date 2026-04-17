@@ -76,6 +76,7 @@ describe("status-json-runtime", () => {
       usage: true,
       deep: true,
       gatewayReachable: true,
+      usageAgentDir: expect.any(String),
       includeSecurityAudit: true,
       suppressHealthErrors: undefined,
     });
@@ -128,6 +129,7 @@ describe("status-json-runtime", () => {
       usage: false,
       deep: false,
       gatewayReachable: true,
+      usageAgentDir: expect.any(String),
       includeSecurityAudit: false,
       suppressHealthErrors: undefined,
     });
@@ -177,6 +179,7 @@ describe("status-json-runtime", () => {
       usage: undefined,
       deep: true,
       gatewayReachable: true,
+      usageAgentDir: expect.any(String),
       includeSecurityAudit: false,
       suppressHealthErrors: true,
     });

@@ -28,6 +28,16 @@ type UsageAuthState = {
   store?: AuthStore;
 };
 
+function isPluginLoadFailure(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    ("name" in error || "message" in error) &&
+    ((error as { name?: string }).name === "PluginLoadFailureError" ||
+      ((error as { message?: string }).message ?? "").includes("plugin load failed"))
+  );
+}
+
 function resolveUsageAuthStore(state: UsageAuthState): AuthStore {
   state.store ??= ensureAuthProfileStore(state.agentDir, {
     allowKeychainPrompt: false,
@@ -137,35 +147,43 @@ async function resolveProviderUsageAuthViaPlugin(params: {
   state: UsageAuthState;
   provider: UsageProviderId;
 }): Promise<ProviderAuth | null> {
-  const resolved = await resolveProviderUsageAuthWithPlugin({
-    provider: params.provider,
-    config: params.state.cfg,
-    env: params.state.env,
-    context: {
-      config: params.state.cfg,
-      agentDir: params.state.agentDir,
-      env: params.state.env,
+  let resolved: Awaited<ReturnType<typeof resolveProviderUsageAuthWithPlugin>> | null = null;
+  try {
+    resolved = await resolveProviderUsageAuthWithPlugin({
       provider: params.provider,
-      resolveApiKeyFromConfigAndStore: (options) =>
-        resolveProviderApiKeyFromConfigAndStore({
-          state: params.state,
-          providerIds: options?.providerIds ?? [params.provider],
-          envDirect: options?.envDirect,
-        }),
-      resolveOAuthToken: async (options) => {
-        const auth = await resolveOAuthToken({
-          state: params.state,
-          provider: options?.provider ?? params.provider,
-        });
-        return auth
-          ? {
-              token: auth.token,
-              ...(auth.accountId ? { accountId: auth.accountId } : {}),
-            }
-          : null;
+      config: params.state.cfg,
+      env: params.state.env,
+      context: {
+        config: params.state.cfg,
+        agentDir: params.state.agentDir,
+        env: params.state.env,
+        provider: params.provider,
+        resolveApiKeyFromConfigAndStore: (options) =>
+          resolveProviderApiKeyFromConfigAndStore({
+            state: params.state,
+            providerIds: options?.providerIds ?? [params.provider],
+            envDirect: options?.envDirect,
+          }),
+        resolveOAuthToken: async (options) => {
+          const auth = await resolveOAuthToken({
+            state: params.state,
+            provider: options?.provider ?? params.provider,
+          });
+          return auth
+            ? {
+                token: auth.token,
+                ...(auth.accountId ? { accountId: auth.accountId } : {}),
+              }
+            : null;
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    if (!isPluginLoadFailure(error)) {
+      throw error;
+    }
+    return null;
+  }
   if (!resolved?.token) {
     return null;
   }

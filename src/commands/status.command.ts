@@ -1,3 +1,4 @@
+import { resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { withProgress } from "../cli/progress.js";
 import { type RuntimeEnv } from "../runtime.js";
 import { runStatusJsonCommand } from "./status-json-command.ts";
@@ -145,6 +146,8 @@ export async function statusCommand(
     pluginCompatibility,
   } = scan;
 
+  const usageAgentDir = resolveAgentDir(scan.cfg, resolveDefaultAgentId(scan.cfg));
+
   const {
     securityAudit,
     usage,
@@ -159,6 +162,7 @@ export async function statusCommand(
     usage: opts.usage,
     deep: opts.deep,
     gatewayReachable,
+    usageAgentDir,
     includeSecurityAudit: true,
     resolveSecurityAudit: async (input) =>
       await withProgress(
@@ -169,14 +173,19 @@ export async function statusCommand(
         },
         async () => await resolveStatusSecurityAudit(input),
       ),
-    resolveUsage: async (timeoutMs) =>
+    resolveUsage: async ({ timeoutMs, config, agentDir }) =>
       await withProgress(
         {
           label: "Fetching usage snapshot…",
           indeterminate: true,
           enabled: opts.json !== true,
         },
-        async () => await resolveStatusUsageSummary(timeoutMs),
+        async () =>
+          await resolveStatusUsageSummary({
+            timeoutMs,
+            config,
+            agentDir: agentDir ?? usageAgentDir,
+          }),
       ),
     resolveHealth: async (input) =>
       await withProgress(

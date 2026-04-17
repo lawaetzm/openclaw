@@ -61,9 +61,22 @@ describe("status-runtime-shared", () => {
   });
 
   it("resolves usage summaries with the provided timeout", async () => {
-    await resolveStatusUsageSummary(1234);
+    await resolveStatusUsageSummary({ timeoutMs: 1234, config: { gateway: {} } });
 
-    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({ timeoutMs: 1234 });
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 1234, config: { gateway: {} } }),
+    );
+  });
+
+  it("passes agentDir through to loadProviderUsageSummary", async () => {
+    await resolveStatusUsageSummary({
+      timeoutMs: 1000,
+      config: { gateway: {} },
+      agentDir: "/custom/agent/dir",
+    });
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith(
+      expect.objectContaining({ agentDir: "/custom/agent/dir" }),
+    );
   });
 
   it("resolves gateway health with the shared probe call shape", async () => {
@@ -164,7 +177,9 @@ describe("status-runtime-shared", () => {
       gatewayService: { label: "LaunchAgent" },
       nodeService: { label: "node" },
     });
-    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({ timeoutMs: 1234 });
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 1234, config: { gateway: {} } }),
+    );
     expect(mocks.callGateway).toHaveBeenNthCalledWith(1, {
       method: "health",
       params: { probe: true },

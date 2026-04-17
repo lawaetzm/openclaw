@@ -92,6 +92,71 @@ describe("writeOAuthCredentials", () => {
     }
   });
 
+  it("replaces stale provider profiles when replaceProviderProfiles=true", async () => {
+    tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-oauth-replace-"));
+    process.env.OPENCLAW_STATE_DIR = tempStateDir;
+
+    const mainAgentDir = path.join(tempStateDir, "agents", "main", "agent");
+    const kidAgentDir = path.join(tempStateDir, "agents", "kid", "agent");
+    await fs.mkdir(mainAgentDir, { recursive: true });
+    await fs.mkdir(kidAgentDir, { recursive: true });
+
+    const stalePayload = JSON.stringify(
+      {
+        version: 1,
+        profiles: {
+          "openai-codex:old@example.com": {
+            type: "oauth",
+            provider: "openai-codex",
+            access: "stale-access",
+            refresh: "stale-refresh",
+            expires: Date.now() + 30_000,
+          },
+        },
+        order: {
+          "openai-codex": ["openai-codex:old@example.com"],
+        },
+        usageStats: {
+          "openai-codex:old@example.com": {
+            lastUsed: Date.now() - 1_000,
+          },
+        },
+      },
+      null,
+      2,
+    );
+    await fs.writeFile(authProfilePathFor(mainAgentDir), stalePayload, "utf8");
+    await fs.writeFile(authProfilePathFor(kidAgentDir), stalePayload, "utf8");
+
+    const creds = {
+      refresh: "refresh-fresh",
+      access: "access-fresh",
+      expires: Date.now() + 60_000,
+    } satisfies OAuthCredentials;
+
+    await writeOAuthCredentials("openai-codex", creds, mainAgentDir, {
+      syncSiblingAgents: true,
+      replaceProviderProfiles: true,
+    });
+
+    for (const dir of [mainAgentDir, kidAgentDir]) {
+      const raw = await fs.readFile(authProfilePathFor(dir), "utf8");
+      const parsed = JSON.parse(raw) as {
+        profiles?: Record<string, OAuthCredentials & { type?: string }>;
+        order?: Record<string, string[]>;
+        usageStats?: Record<string, unknown>;
+      };
+      expect(Object.keys(parsed.profiles ?? {})).toEqual(["openai-codex:default"]);
+      expect(parsed.profiles?.["openai-codex:default"]).toMatchObject({
+        refresh: "refresh-fresh",
+        access: "access-fresh",
+        type: "oauth",
+      });
+      expect(parsed.order?.["openai-codex"]).toBeUndefined();
+      expect(parsed.usageStats?.["openai-codex:old@example.com"]).toBeUndefined();
+    }
+  });
+
   it("writes OAuth credentials only to target dir by default", async () => {
     tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-oauth-nosync-"));
     process.env.OPENCLAW_STATE_DIR = tempStateDir;

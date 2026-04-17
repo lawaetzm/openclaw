@@ -3,7 +3,10 @@ import path from "node:path";
 import type { OAuthCredentials } from "@mariozechner/pi-ai";
 import { resolveOpenClawAgentDir } from "../agents/agent-paths.js";
 import { buildAuthProfileId } from "../agents/auth-profiles/identity.js";
-import { upsertAuthProfile } from "../agents/auth-profiles/profiles.js";
+import {
+  removeProviderAuthProfilesWithLock,
+  upsertAuthProfile,
+} from "../agents/auth-profiles/profiles.js";
 import { resolveProviderIdForAuth } from "../agents/provider-auth-aliases.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -28,6 +31,7 @@ export type ApiKeyStorageOptions = {
 
 export type WriteOAuthCredentialsOptions = {
   syncSiblingAgents?: boolean;
+  replaceProviderProfiles?: boolean;
   profileName?: string;
   displayName?: string;
 };
@@ -287,6 +291,12 @@ export async function writeOAuthCredentials(
     ...(options?.displayName ? { displayName: options.displayName } : {}),
   };
 
+  if (options?.replaceProviderProfiles) {
+    await removeProviderAuthProfilesWithLock({
+      provider,
+      agentDir: resolvedAgentDir,
+    });
+  }
   upsertAuthProfile({
     profileId,
     credential,
@@ -301,6 +311,12 @@ export async function writeOAuthCredentials(
         continue;
       }
       try {
+        if (options?.replaceProviderProfiles) {
+          await removeProviderAuthProfilesWithLock({
+            provider,
+            agentDir: targetAgentDir,
+          });
+        }
         upsertAuthProfile({
           profileId,
           credential,

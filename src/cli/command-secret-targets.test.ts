@@ -57,6 +57,7 @@ import {
   getQrRemoteCommandSecretTargetIds,
   getScopedChannelsCommandSecretTargets,
   getSecurityAuditCommandSecretTargetIds,
+  getStatusCommandSecretTargetIds,
 } from "./command-secret-targets.js";
 
 describe("command secret target ids", () => {
@@ -93,6 +94,14 @@ describe("command secret target ids", () => {
     expect(ids.has("gateway.auth.password")).toBe(true);
     expect(ids.has("gateway.remote.token")).toBe(true);
     expect(ids.has("gateway.remote.password")).toBe(true);
+  });
+
+  it("keeps status command target ids free of channel secrets", () => {
+    const ids = getStatusCommandSecretTargetIds();
+    expect(ids.has("agents.defaults.memorySearch.remote.apiKey")).toBe(true);
+    expect(ids.has("agents.list[].memorySearch.remote.apiKey")).toBe(true);
+    expect(ids.has("channels.discord.token")).toBe(false);
+    expect(ids.has("channels.telegram.botToken")).toBe(false);
   });
 
   it("scopes channel targets to the requested channel", () => {

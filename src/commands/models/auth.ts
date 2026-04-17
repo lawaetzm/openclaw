@@ -18,12 +18,16 @@ import {
 } from "../../agents/auth-profiles.js";
 import type { AuthProfileCredential } from "../../agents/auth-profiles/types.js";
 import { normalizeProviderId } from "../../agents/model-selection.js";
+import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { parseDurationMs } from "../../cli/parse-duration.js";
 import { logConfigUpdated } from "../../config/logging.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { applyAuthProfileConfig } from "../../plugins/provider-auth-helpers.js";
+import {
+  applyAuthProfileConfig,
+  writeOAuthCredentials,
+} from "../../plugins/provider-auth-helpers.js";
 import { resolvePluginProviders } from "../../plugins/providers.runtime.js";
 import type {
   ProviderAuthMethod,
@@ -85,6 +89,9 @@ const select = async <T>(params: Parameters<typeof clackSelect<T>>[0]) =>
 function resolveDefaultTokenProfileId(provider: string): string {
   return `${normalizeProviderId(provider)}:manual`;
 }
+
+const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
+const OPENAI_CODEX_DEFAULT_PROFILE_NAME = "default";
 
 type ResolvedModelsAuthContext = {
   config: OpenClawConfig;
@@ -234,12 +241,41 @@ async function persistProviderAuthResult(params: {
   prompter: ReturnType<typeof createClackPrompter>;
   setDefault?: boolean;
 }) {
+  const persistedProfiles: typeof params.result.profiles = [];
   for (const profile of params.result.profiles) {
+    if (
+      profile.credential.provider === OPENAI_CODEX_PROVIDER_ID &&
+      profile.credential.type === "oauth"
+    ) {
+      const profileId = await writeOAuthCredentials(
+        profile.credential.provider,
+        {
+          access: profile.credential.access,
+          refresh: profile.credential.refresh,
+          expires: profile.credential.expires,
+          ...(profile.credential.email ? { email: profile.credential.email } : {}),
+          ...(profile.credential.accountId ? { accountId: profile.credential.accountId } : {}),
+        },
+        params.agentDir,
+        {
+          syncSiblingAgents: true,
+          replaceProviderProfiles: true,
+          profileName: OPENAI_CODEX_DEFAULT_PROFILE_NAME,
+          displayName: profile.credential.displayName,
+        },
+      );
+      persistedProfiles.push({
+        profileId,
+        credential: profile.credential,
+      });
+      continue;
+    }
     upsertAuthProfile({
       profileId: profile.profileId,
       credential: profile.credential,
       agentDir: params.agentDir,
     });
+    persistedProfiles.push(profile);
   }
 
   await updateConfig((cfg) => {
@@ -247,7 +283,22 @@ async function persistProviderAuthResult(params: {
     if (params.result.configPatch) {
       next = applyProviderAuthConfigPatch(next, params.result.configPatch);
     }
-    for (const profile of params.result.profiles) {
+    const keptProfileIdsByProvider = new Map<string, string[]>();
+    for (const profile of persistedProfiles) {
+      const providerId = profile.credential.provider;
+      const existing = keptProfileIdsByProvider.get(providerId) ?? [];
+      if (!existing.includes(profile.profileId)) {
+        existing.push(profile.profileId);
+        keptProfileIdsByProvider.set(providerId, existing);
+      }
+    }
+    if (keptProfileIdsByProvider.has(OPENAI_CODEX_PROVIDER_ID)) {
+      next = pruneProviderAuthConfig(next, {
+        provider: OPENAI_CODEX_PROVIDER_ID,
+        keepProfileIds: keptProfileIdsByProvider.get(OPENAI_CODEX_PROVIDER_ID) ?? [],
+      });
+    }
+    for (const profile of persistedProfiles) {
       next = applyAuthProfileConfig(next, {
         profileId: profile.profileId,
         provider: profile.credential.provider,
@@ -261,7 +312,7 @@ async function persistProviderAuthResult(params: {
   });
 
   logConfigUpdated(params.runtime);
-  for (const profile of params.result.profiles) {
+  for (const profile of persistedProfiles) {
     params.runtime.log(
       `Auth profile: ${profile.profileId} (${profile.credential.provider}/${credentialMode(profile.credential)})`,
     );
@@ -276,6 +327,48 @@ async function persistProviderAuthResult(params: {
   if (params.result.notes && params.result.notes.length > 0) {
     await params.prompter.note(params.result.notes.join("\n"), "Provider notes");
   }
+}
+
+function pruneProviderAuthConfig(
+  cfg: OpenClawConfig,
+  params: {
+    provider: string;
+    keepProfileIds: string[];
+  },
+): OpenClawConfig {
+  const providerKey = resolveProviderIdForAuth(params.provider, { config: cfg });
+  const keepProfileIds = new Set(params.keepProfileIds);
+  const nextProfiles = Object.fromEntries(
+    Object.entries(cfg.auth?.profiles ?? {}).filter(([profileId, profile]) => {
+      if (keepProfileIds.has(profileId)) {
+        return true;
+      }
+      return resolveProviderIdForAuth(profile.provider, { config: cfg }) !== providerKey;
+    }),
+  );
+  const nextOrder = Object.fromEntries(
+    Object.entries(cfg.auth?.order ?? {}).filter(
+      ([providerId]) => resolveProviderIdForAuth(providerId, { config: cfg }) !== providerKey,
+    ),
+  );
+  if (params.keepProfileIds.length > 0) {
+    nextOrder[providerKey] = [...params.keepProfileIds];
+  }
+  const nextAuth = {
+    ...cfg.auth,
+    ...(Object.keys(nextProfiles).length > 0 ? { profiles: nextProfiles } : {}),
+    ...(Object.keys(nextOrder).length > 0 ? { order: nextOrder } : {}),
+  };
+  if (Object.keys(nextProfiles).length === 0) {
+    delete nextAuth.profiles;
+  }
+  if (Object.keys(nextOrder).length === 0) {
+    delete nextAuth.order;
+  }
+  return {
+    ...cfg,
+    auth: Object.keys(nextAuth).length > 0 ? nextAuth : undefined,
+  };
 }
 
 async function runProviderAuthMethod(params: {

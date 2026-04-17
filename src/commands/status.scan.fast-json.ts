@@ -22,6 +22,7 @@ export async function scanStatusJsonWithPolicy(
   opts: {
     timeoutMs?: number;
     all?: boolean;
+    usage?: boolean;
   },
   runtime: RuntimeEnv,
   policy: StatusJsonScanPolicy,
@@ -35,7 +36,7 @@ export async function scanStatusJsonWithPolicy(
     resolveHasConfiguredChannels: policy.resolveHasConfiguredChannels,
     includeChannelsData: false,
   });
-  if (overview.hasConfiguredChannels) {
+  if (overview.hasConfiguredChannels && opts.usage !== true) {
     await ensureCliPluginRegistryLoaded({
       scope: "configured-channels",
       routeLogsToStderr: true,
@@ -56,6 +57,7 @@ export async function scanStatusJsonFast(
   opts: {
     timeoutMs?: number;
     all?: boolean;
+    usage?: boolean;
   },
   runtime: RuntimeEnv,
 ): Promise<StatusScanResult> {

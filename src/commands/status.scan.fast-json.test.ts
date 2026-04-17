@@ -57,6 +57,14 @@ describe("scanStatusJsonFast", () => {
     expect(loggingStateRef.forceConsoleToStderr).toBe(false);
   });
 
+  it("skips deferred plugin loading for usage-only json status", async () => {
+    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+
+    await scanStatusJsonFast({ usage: true }, {} as never);
+
+    expect(mocks.ensurePluginRegistryLoaded).not.toHaveBeenCalled();
+  });
+
   it("skips plugin compatibility loading even when configured channels are present", async () => {
     mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
 

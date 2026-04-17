@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   logConfigUpdated: vi.fn(),
   openUrl: vi.fn(),
   isRemoteEnvironment: vi.fn(() => false),
+  writeOAuthCredentials: vi.fn(),
   loadAuthProfileStoreForRuntime: vi.fn(),
   listProfilesForProvider: vi.fn(),
   clearAuthProfileCooldown: vi.fn(),
@@ -58,6 +59,14 @@ vi.mock("../../plugins/providers.runtime.js", () => ({
 vi.mock("../../wizard/clack-prompter.js", () => ({
   createClackPrompter: mocks.createClackPrompter,
 }));
+
+vi.mock("../../plugins/provider-auth-helpers.js", async (importActual) => {
+  const actual = await importActual<typeof import("../../plugins/provider-auth-helpers.js")>();
+  return {
+    ...actual,
+    writeOAuthCredentials: mocks.writeOAuthCredentials,
+  };
+});
 
 vi.mock("./shared.js", async (importActual) => {
   const actual = await importActual<typeof import("./shared.js")>();
@@ -147,6 +156,7 @@ describe("modelsAuthLoginCommand", () => {
     mocks.clackSelect.mockReset();
     mocks.clackText.mockReset();
     mocks.upsertAuthProfile.mockReset();
+    mocks.writeOAuthCredentials.mockReset();
 
     mocks.resolveDefaultAgentId.mockReturnValue("main");
     mocks.resolveAgentDir.mockReturnValue("/tmp/openclaw/agents/main");
@@ -168,7 +178,7 @@ describe("modelsAuthLoginCommand", () => {
     runProviderAuth = vi.fn().mockResolvedValue({
       profiles: [
         {
-          profileId: "openai-codex:user@example.com",
+          profileId: "openai-codex:default",
           credential: {
             type: "oauth",
             provider: "openai-codex",
@@ -188,6 +198,7 @@ describe("modelsAuthLoginCommand", () => {
         run: runProviderAuth as ProviderPlugin["auth"][number]["run"],
       }),
     ]);
+    mocks.writeOAuthCredentials.mockResolvedValue("openai-codex:default");
     mocks.loadAuthProfileStoreForRuntime.mockReturnValue({ profiles: {}, usageStats: {} });
     mocks.listProfilesForProvider.mockReturnValue([]);
     mocks.clearAuthProfileCooldown.mockResolvedValue(undefined);
@@ -204,20 +215,30 @@ describe("modelsAuthLoginCommand", () => {
     await modelsAuthLoginCommand({ provider: "openai-codex" }, runtime);
 
     expect(runProviderAuth).toHaveBeenCalledOnce();
-    expect(mocks.upsertAuthProfile).toHaveBeenCalledWith({
-      profileId: "openai-codex:user@example.com",
-      credential: expect.objectContaining({
-        type: "oauth",
-        provider: "openai-codex",
-      }),
-      agentDir: "/tmp/openclaw/agents/main",
-    });
-    expect(lastUpdatedConfig?.auth?.profiles?.["openai-codex:user@example.com"]).toMatchObject({
+    expect(mocks.writeOAuthCredentials).toHaveBeenCalledWith(
+      "openai-codex",
+      {
+        access: "access-token",
+        refresh: "refresh-token",
+        expires: expect.any(Number),
+        email: "user@example.com",
+      },
+      "/tmp/openclaw/agents/main",
+      {
+        syncSiblingAgents: true,
+        replaceProviderProfiles: true,
+        profileName: "default",
+        displayName: undefined,
+      },
+    );
+    expect(mocks.upsertAuthProfile).not.toHaveBeenCalled();
+    expect(lastUpdatedConfig?.auth?.profiles?.["openai-codex:default"]).toMatchObject({
       provider: "openai-codex",
       mode: "oauth",
     });
+    expect(lastUpdatedConfig?.auth?.order?.["openai-codex"]).toEqual(["openai-codex:default"]);
     expect(runtime.log).toHaveBeenCalledWith(
-      "Auth profile: openai-codex:user@example.com (openai-codex/oauth)",
+      "Auth profile: openai-codex:default (openai-codex/oauth)",
     );
     expect(runtime.log).toHaveBeenCalledWith(
       "Default model available: openai-codex/gpt-5.4 (use --set-default to apply)",
@@ -225,6 +246,45 @@ describe("modelsAuthLoginCommand", () => {
     expect(runtime.log).toHaveBeenCalledWith(
       "Tip: Codex-capable models can use native Codex web search. Enable it with openclaw configure --section web (recommended mode: cached). Docs: https://docs.openclaw.ai/tools/web",
     );
+  });
+
+  it("prunes stale openai-codex config profiles during canonical login", async () => {
+    const runtime = createRuntime();
+    currentConfig = {
+      auth: {
+        profiles: {
+          "openai-codex:legacy@example.com": {
+            provider: "openai-codex",
+            mode: "oauth",
+          },
+          "anthropic:default": {
+            provider: "anthropic",
+            mode: "token",
+          },
+        },
+        order: {
+          "openai-codex": ["openai-codex:legacy@example.com"],
+          anthropic: ["anthropic:default"],
+        },
+      },
+    };
+
+    await modelsAuthLoginCommand({ provider: "openai-codex" }, runtime);
+
+    expect(lastUpdatedConfig?.auth?.profiles).toEqual({
+      "anthropic:default": {
+        provider: "anthropic",
+        mode: "token",
+      },
+      "openai-codex:default": {
+        provider: "openai-codex",
+        mode: "oauth",
+      },
+    });
+    expect(lastUpdatedConfig?.auth?.order).toEqual({
+      anthropic: ["anthropic:default"],
+      "openai-codex": ["openai-codex:default"],
+    });
   });
 
   it("applies openai-codex default model when --set-default is used", async () => {

@@ -3,6 +3,13 @@ import { resolveProviderUsageSnapshotWithPlugin } from "../plugins/provider-runt
 import { resolveFetch } from "./fetch.js";
 import { type ProviderAuth, resolveProviderAuths } from "./provider-usage.auth.js";
 import {
+  fetchClaudeUsage,
+  fetchCodexUsage,
+  fetchGeminiUsage,
+  fetchMinimaxUsage,
+  fetchZaiUsage,
+} from "./provider-usage.fetch.js";
+import {
   DEFAULT_TIMEOUT_MS,
   ignoredErrors,
   PROVIDER_LABELS,
@@ -42,6 +49,47 @@ type UsageSummaryOptions = {
   fetch?: typeof fetch;
 };
 
+function isPluginLoadFailure(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    ("name" in error || "message" in error) &&
+    ((error as { name?: string }).name === "PluginLoadFailureError" ||
+      ((error as { message?: string }).message ?? "").includes("plugin load failed"))
+  );
+}
+
+async function fetchProviderUsageSnapshotBuiltin(params: {
+  auth: ProviderAuth;
+  timeoutMs: number;
+  fetchFn: typeof fetch;
+}): Promise<ProviderUsageSnapshot | null> {
+  switch (params.auth.provider) {
+    case "anthropic":
+      return await fetchClaudeUsage(params.auth.token, params.timeoutMs, params.fetchFn);
+    case "google-gemini-cli":
+      return await fetchGeminiUsage(
+        params.auth.token,
+        params.timeoutMs,
+        params.fetchFn,
+        params.auth.provider,
+      );
+    case "minimax":
+      return await fetchMinimaxUsage(params.auth.token, params.timeoutMs, params.fetchFn);
+    case "openai-codex":
+      return await fetchCodexUsage(
+        params.auth.token,
+        params.auth.accountId,
+        params.timeoutMs,
+        params.fetchFn,
+      );
+    case "zai":
+      return await fetchZaiUsage(params.auth.token, params.timeoutMs, params.fetchFn);
+    default:
+      return null;
+  }
+}
+
 async function fetchProviderUsageSnapshot(params: {
   auth: ProviderAuth;
   config: OpenClawConfig;
@@ -51,25 +99,46 @@ async function fetchProviderUsageSnapshot(params: {
   timeoutMs: number;
   fetchFn: typeof fetch;
 }): Promise<ProviderUsageSnapshot> {
-  const pluginSnapshot = await resolveProviderUsageSnapshotWithPlugin({
-    provider: params.auth.provider,
-    config: params.config,
-    workspaceDir: params.workspaceDir,
-    env: params.env,
-    context: {
-      config: params.config,
-      agentDir: params.agentDir,
-      workspaceDir: params.workspaceDir,
-      env: params.env,
-      provider: params.auth.provider,
-      token: params.auth.token,
-      accountId: params.auth.accountId,
+  let pluginSnapshot: ProviderUsageSnapshot | null = null;
+  try {
+    pluginSnapshot =
+      (await resolveProviderUsageSnapshotWithPlugin({
+        provider: params.auth.provider,
+        config: params.config,
+        workspaceDir: params.workspaceDir,
+        env: params.env,
+        context: {
+          config: params.config,
+          agentDir: params.agentDir,
+          workspaceDir: params.workspaceDir,
+          env: params.env,
+          provider: params.auth.provider,
+          token: params.auth.token,
+          accountId: params.auth.accountId,
+          timeoutMs: params.timeoutMs,
+          fetchFn: params.fetchFn,
+        },
+      })) ?? null;
+  } catch (error) {
+    if (!isPluginLoadFailure(error)) {
+      throw error;
+    }
+    pluginSnapshot = await fetchProviderUsageSnapshotBuiltin({
+      auth: params.auth,
       timeoutMs: params.timeoutMs,
       fetchFn: params.fetchFn,
-    },
-  });
+    });
+  }
   if (pluginSnapshot) {
     return pluginSnapshot;
+  }
+  const builtinSnapshot = await fetchProviderUsageSnapshotBuiltin({
+    auth: params.auth,
+    timeoutMs: params.timeoutMs,
+    fetchFn: params.fetchFn,
+  });
+  if (builtinSnapshot) {
+    return builtinSnapshot;
   }
   return await fetchProviderUsageSnapshotFallback({
     auth: params.auth,

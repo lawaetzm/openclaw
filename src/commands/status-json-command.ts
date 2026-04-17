@@ -15,12 +15,12 @@ export async function runStatusJsonCommand(params: {
   includePluginCompatibility?: boolean;
   suppressHealthErrors?: boolean;
   scanStatusJsonFast: (
-    opts: { timeoutMs?: number; all?: boolean },
+    opts: { timeoutMs?: number; all?: boolean; usage?: boolean },
     runtime: RuntimeEnv,
   ) => Promise<Parameters<typeof resolveStatusJsonOutput>[0]["scan"]>;
 }) {
   const scan = await params.scanStatusJsonFast(
-    { timeoutMs: params.opts.timeoutMs, all: params.opts.all },
+    { timeoutMs: params.opts.timeoutMs, all: params.opts.all, usage: params.opts.usage },
     params.runtime,
   );
   writeRuntimeJson(

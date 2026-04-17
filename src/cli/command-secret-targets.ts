@@ -77,7 +77,7 @@ function buildCommandSecretTargets(): CommandSecretTargets {
   return {
     channels: channelTargetIds,
     agentRuntime: [...STATIC_AGENT_RUNTIME_BASE_TARGET_IDS, ...channelTargetIds],
-    status: [...STATIC_STATUS_TARGET_IDS, ...channelTargetIds],
+    status: [...STATIC_STATUS_TARGET_IDS],
     securityAudit: [...STATIC_SECURITY_AUDIT_TARGET_IDS, ...channelTargetIds],
   };
 }

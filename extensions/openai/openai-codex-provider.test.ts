@@ -1,9 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const refreshOpenAICodexTokenMock = vi.hoisted(() => vi.fn());
+const loginOpenAICodexOAuthMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./openai-codex-provider.runtime.js", () => ({
   refreshOpenAICodexToken: refreshOpenAICodexTokenMock,
+}));
+
+vi.mock("openclaw/plugin-sdk/provider-auth-login", () => ({
+  loginOpenAICodexOAuth: loginOpenAICodexOAuthMock,
 }));
 
 let buildOpenAICodexProviderPlugin: typeof import("./openai-codex-provider.js").buildOpenAICodexProviderPlugin;
@@ -15,6 +20,38 @@ describe("openai codex provider", () => {
 
   beforeEach(() => {
     refreshOpenAICodexTokenMock.mockReset();
+    loginOpenAICodexOAuthMock.mockReset();
+  });
+
+  it("canonicalizes oauth login to the default profile id", async () => {
+    const provider = buildOpenAICodexProviderPlugin();
+    loginOpenAICodexOAuthMock.mockResolvedValueOnce({
+      access: "header.payload.signature",
+      refresh: "refresh-token",
+      expires: Date.now() + 60_000,
+      email: "ml@mediskill.dk",
+    });
+
+    const result = await provider.auth[0]?.run({
+      prompter: {} as never,
+      runtime: {} as never,
+      isRemote: false,
+      openUrl: async () => undefined,
+    } as never);
+
+    expect(result).toMatchObject({
+      profiles: [
+        {
+          profileId: "openai-codex:default",
+          credential: {
+            type: "oauth",
+            provider: "openai-codex",
+            email: "ml@mediskill.dk",
+          },
+        },
+      ],
+      defaultModel: "openai-codex/gpt-5.4",
+    });
   });
 
   it("falls back to the cached credential when accountId extraction fails", async () => {

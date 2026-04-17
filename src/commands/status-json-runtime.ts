@@ -1,3 +1,4 @@
+import { resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { UpdateCheckResult } from "../infra/update-check.js";
 import { buildStatusJsonPayload } from "./status-json-payload.ts";
@@ -60,6 +61,7 @@ export async function resolveStatusJsonOutput(params: {
   suppressHealthErrors?: boolean;
 }) {
   const { scan, opts } = params;
+  const usageAgentDir = resolveAgentDir(scan.cfg, resolveDefaultAgentId(scan.cfg));
   const { securityAudit, usage, health, lastHeartbeat, gatewayService, nodeService } =
     await resolveStatusRuntimeSnapshot({
       config: scan.cfg,
@@ -68,6 +70,7 @@ export async function resolveStatusJsonOutput(params: {
       usage: opts.usage,
       deep: opts.deep,
       gatewayReachable: scan.gatewayReachable,
+      usageAgentDir,
       includeSecurityAudit: params.includeSecurityAudit,
       suppressHealthErrors: params.suppressHealthErrors,
     });
