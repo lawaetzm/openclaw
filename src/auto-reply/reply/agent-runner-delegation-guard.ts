@@ -1,7 +1,7 @@
 import type { ReplyPayload } from "../types.js";
 
 export const UNFULFILLED_DELEGATION_NOTE =
-  "Bemærk: Denne turn indeholder et løfte om at delegere eller eksekvere en handling, men intet agent-bus job blev oprettet. Handlingen vil ikke ske automatisk. Eksekvér handlingen nu eller forklar hvad der blokerer.";
+  "Bemærk: Denne turn indeholder et løfte om at delegere eller eksekvere en handling, men der blev ikke kaldt et tool. Handlingen vil ikke ske automatisk. Eksekvér handlingen nu eller forklar hvad der blokerer.";
 
 const DELEGATION_COMMITMENT_PATTERNS_DA: RegExp[] = [
   /\bjeg\s+(?:gør|starter|kører|delegerer|sender\s+til|videresender|beder|spørger)\b.*\b(?:nu|med\s+det\s+samme|straks|lige)\b/i,
@@ -18,19 +18,7 @@ const DELEGATION_COMMITMENT_PATTERNS_EN: RegExp[] = [
 
 const ALL_PATTERNS = [...DELEGATION_COMMITMENT_PATTERNS_DA, ...DELEGATION_COMMITMENT_PATTERNS_EN];
 
-const FOLLOWTHROUGH_EVIDENCE = [
-  /job_id[:\s]+[`'"]/i,
-  /create_job\s*\(/i,
-  /delegate\s*\(/i,
-  /delegate_and_wait\s*\(/i,
-  /agent[-_\s]?bus/i,
-  /complete_job\s*\(/i,
-  /fail_job\s*\(/i,
-  /job\s+oprettet/i,
-  /delegeret\s+til/i,
-  /kæde.*startet/i,
-  /chain.*started/i,
-];
+const FOLLOWTHROUGH_EVIDENCE = [/sessions_send\s*\(/i, /delegeret\s+til/i];
 
 export function hasDelegationCommitment(text: string): boolean {
   if (!text?.trim()) {

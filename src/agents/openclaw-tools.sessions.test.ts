@@ -799,46 +799,6 @@ describe("sessions tools", () => {
     expect(sendCallCount).toBe(0);
   });
 
-  it("sessions_send routes top-level cross-agent delegation through agent bus", async () => {
-    const delegateToAgentBus = vi.fn().mockResolvedValue({
-      ok: true,
-      result: {
-        job_id: "job-bus-1",
-        status: "done",
-        result: { summary: "Axel completed the task." },
-      },
-    });
-
-    const tool = createSessionsSendTool({
-      agentSessionKey: "agent:main:main",
-      agentChannel: "webchat",
-      config: TEST_CONFIG,
-      callGateway: (opts: unknown) => callGatewayMock(opts),
-      delegateToAgentBus,
-    });
-
-    const waited = await tool.execute("call-bus", {
-      sessionKey: "agent:axel:main",
-      message: "Review the change and report back",
-      timeoutSeconds: 1,
-    });
-
-    expect(waited.details).toMatchObject({
-      status: "ok",
-      reply: "Axel completed the task.",
-      jobId: "job-bus-1",
-      delivery: { status: "completed", mode: "agent_bus" },
-    });
-    expect(delegateToAgentBus).toHaveBeenCalledWith({
-      fromAgent: "main",
-      toAgent: "axel",
-      requesterSessionKey: "agent:main:main",
-      task: "Review the change and report back",
-      timeoutSeconds: 1,
-    });
-    expect(callGatewayMock).not.toHaveBeenCalled();
-  });
-
   it("sessions_send resolves sessionId inputs", async () => {
     const sessionId = "sess-send";
     const targetKey = "agent:main:discord:channel:123";
