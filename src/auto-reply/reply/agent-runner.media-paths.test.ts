@@ -46,7 +46,7 @@ vi.mock("./queue.js", () => ({
   scheduleFollowupDrain: scheduleFollowupDrainMock,
 }));
 
-let runReplyAgent: typeof import("./agent-runner.js").runReplyAgent;
+let runReplyAgent: typeof import("./run-reply-agent.js").runReplyAgent;
 
 describe("runReplyAgent media path normalization", () => {
   beforeEach(async () => {
@@ -82,7 +82,7 @@ describe("runReplyAgent media path normalization", () => {
         model,
       }),
     );
-    ({ runReplyAgent } = await import("./agent-runner.js"));
+    ({ runReplyAgent } = await import("./run-reply-agent.js"));
   });
 
   afterEach(() => {

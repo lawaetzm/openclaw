@@ -71,7 +71,7 @@ import {
   SLACK_CHANNEL,
   slackConfigAdapter,
 } from "./shared.js";
-import { parseSlackTarget } from "./target-parsing.js";
+import { parseSlackTarget } from "./targets.js";
 import { buildSlackThreadingToolContext } from "./threading-tool-context.js";
 
 const resolveSlackDmPolicy = createScopedDmSecurityResolver<ResolvedSlackAccount>({

@@ -54,7 +54,7 @@ vi.mock("./queue.js", async () => {
   };
 });
 
-const { runReplyAgent } = await import("./agent-runner.js");
+const { runReplyAgent } = await import("./run-reply-agent.js");
 
 describe("runReplyAgent runtime config", () => {
   beforeEach(() => {

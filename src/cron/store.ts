@@ -109,6 +109,78 @@ type SaveCronStoreOptions = {
   skipBackup?: boolean;
 };
 
+const cronStoreWriteLocks = new Map<string, Promise<void>>();
+
+async function withCronStoreWriteLock<T>(storePath: string, fn: () => Promise<T>): Promise<T> {
+  const previous = cronStoreWriteLocks.get(storePath) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  cronStoreWriteLocks.set(
+    storePath,
+    previous.then(() => current),
+  );
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (cronStoreWriteLocks.get(storePath) === current) {
+      cronStoreWriteLocks.delete(storePath);
+    }
+  }
+}
+
+function stableJobKey(
+  job: { id?: unknown; sessionKey?: unknown; name?: unknown },
+  index: number,
+): string {
+  if (typeof job.id === "string" && job.id.trim()) {
+    return `id:${job.id}`;
+  }
+  if (typeof job.sessionKey === "string" && job.sessionKey.trim()) {
+    return `session:${job.sessionKey}`;
+  }
+  if (typeof job.name === "string" && job.name.trim()) {
+    return `name:${job.name}:${index}`;
+  }
+  return `index:${index}`;
+}
+
+function mergeCronStores(previous: CronStoreFile, next: CronStoreFile): CronStoreFile {
+  const previousJobs = new Map<string, CronStoreFile["jobs"][number]>();
+  previous.jobs.forEach((job, index) => {
+    previousJobs.set(stableJobKey(job, index), job);
+  });
+  const nextJobs = new Map<string, CronStoreFile["jobs"][number]>();
+  next.jobs.forEach((job, index) => {
+    nextJobs.set(stableJobKey(job, index), job);
+  });
+
+  const removedKeys = new Set<string>();
+  for (const key of previousJobs.keys()) {
+    if (!nextJobs.has(key)) {
+      removedKeys.add(key);
+    }
+  }
+
+  const mergedJobs = new Map<string, CronStoreFile["jobs"][number]>();
+  for (const [key, job] of previousJobs.entries()) {
+    if (!removedKeys.has(key)) {
+      mergedJobs.set(key, job);
+    }
+  }
+  for (const [key, job] of nextJobs.entries()) {
+    mergedJobs.set(key, job);
+  }
+
+  return {
+    version: 1,
+    jobs: Array.from(mergedJobs.values()),
+  };
+}
+
 async function setSecureFileMode(filePath: string): Promise<void> {
   await fs.promises.chmod(filePath, 0o600).catch(() => undefined);
 }
@@ -118,17 +190,13 @@ export async function saveCronStore(
   store: CronStoreFile,
   opts?: SaveCronStoreOptions,
 ) {
-  const storeDir = path.dirname(storePath);
-  await fs.promises.mkdir(storeDir, { recursive: true, mode: 0o700 });
-  await fs.promises.chmod(storeDir, 0o700).catch(() => undefined);
-  const json = JSON.stringify(store, null, 2);
-  const cached = serializedStoreCache.get(storePath);
-  if (cached === json) {
-    return;
-  }
+  return await withCronStoreWriteLock(storePath, async () => {
+    const storeDir = path.dirname(storePath);
+    await fs.promises.mkdir(storeDir, { recursive: true, mode: 0o700 });
+    await fs.promises.chmod(storeDir, 0o700).catch(() => undefined);
 
-  let previous: string | null = cached ?? null;
-  if (previous === null) {
+    let effectiveStore = store;
+    let previous: string | null = null;
     try {
       previous = await fs.promises.readFile(storePath, "utf-8");
     } catch (err) {
@@ -136,28 +204,40 @@ export async function saveCronStore(
         throw err;
       }
     }
-  }
-  if (previous === json) {
-    serializedStoreCache.set(storePath, json);
-    return;
-  }
-  const skipBackup =
-    opts?.skipBackup === true || shouldSkipCronBackupForRuntimeOnlyChanges(previous, store);
-  const tmp = `${storePath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  await fs.promises.writeFile(tmp, json, { encoding: "utf-8", mode: 0o600 });
-  await setSecureFileMode(tmp);
-  if (previous !== null && !skipBackup) {
-    try {
-      const backupPath = `${storePath}.bak`;
-      await fs.promises.copyFile(storePath, backupPath);
-      await setSecureFileMode(backupPath);
-    } catch {
-      // best-effort
+
+    const parsedPrevious = previous ? parseCronStoreForBackupComparison(previous) : null;
+    if (parsedPrevious) {
+      effectiveStore = mergeCronStores(parsedPrevious, store);
     }
-  }
-  await renameWithRetry(tmp, storePath);
-  await setSecureFileMode(storePath);
-  serializedStoreCache.set(storePath, json);
+
+    const json = JSON.stringify(effectiveStore, null, 2);
+    const cached = serializedStoreCache.get(storePath);
+    if (cached === json) {
+      return;
+    }
+    if (previous === json) {
+      serializedStoreCache.set(storePath, json);
+      return;
+    }
+    const skipBackup =
+      opts?.skipBackup === true ||
+      shouldSkipCronBackupForRuntimeOnlyChanges(previous, effectiveStore);
+    const tmp = `${storePath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+    await fs.promises.writeFile(tmp, json, { encoding: "utf-8", mode: 0o600 });
+    await setSecureFileMode(tmp);
+    if (previous !== null && !skipBackup) {
+      try {
+        const backupPath = `${storePath}.bak`;
+        await fs.promises.copyFile(storePath, backupPath);
+        await setSecureFileMode(backupPath);
+      } catch {
+        // best-effort
+      }
+    }
+    await renameWithRetry(tmp, storePath);
+    await setSecureFileMode(storePath);
+    serializedStoreCache.set(storePath, json);
+  });
 }
 
 const RENAME_MAX_RETRIES = 3;

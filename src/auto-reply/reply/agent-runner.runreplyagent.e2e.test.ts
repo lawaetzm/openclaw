@@ -31,12 +31,12 @@ let modelFallbackModule: typeof import("../../agents/model-fallback.js");
 let onAgentEvent: typeof import("../../infra/agent-events.js").onAgentEvent;
 
 let runReplyAgentPromise:
-  | Promise<(typeof import("./agent-runner.js"))["runReplyAgent"]>
+  | Promise<(typeof import("./run-reply-agent.js"))["runReplyAgent"]>
   | undefined;
 
 async function getRunReplyAgent() {
   if (!runReplyAgentPromise) {
-    runReplyAgentPromise = import("./agent-runner.js").then((m) => m.runReplyAgent);
+    runReplyAgentPromise = import("./run-reply-agent.js").then((m) => m.runReplyAgent);
   }
   return await runReplyAgentPromise;
 }
