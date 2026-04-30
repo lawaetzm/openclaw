@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => ({
   callGateway: vi.fn(),
   getDaemonStatusSummary: vi.fn(),
   getNodeDaemonStatusSummary: vi.fn(),
+  resolveReadOnlyChannelPluginsForConfig: vi.fn(),
+}));
+
+vi.mock("../channels/plugins/read-only.js", () => ({
+  resolveReadOnlyChannelPluginsForConfig: mocks.resolveReadOnlyChannelPluginsForConfig,
 }));
 
 vi.mock("../infra/provider-usage.js", () => ({
@@ -43,6 +48,11 @@ describe("status-runtime-shared", () => {
     mocks.callGateway.mockResolvedValue({ ok: true });
     mocks.getDaemonStatusSummary.mockResolvedValue({ label: "LaunchAgent" });
     mocks.getNodeDaemonStatusSummary.mockResolvedValue({ label: "node" });
+    mocks.resolveReadOnlyChannelPluginsForConfig.mockReturnValue({
+      plugins: [{ id: "telegram" }],
+      configuredChannelIds: ["telegram"],
+      missingConfiguredChannelIds: [],
+    });
   });
 
   it("resolves the shared security audit payload", async () => {
@@ -57,26 +67,44 @@ describe("status-runtime-shared", () => {
       deep: false,
       includeFilesystem: true,
       includeChannelSecurity: true,
+      loadPluginSecurityCollectors: false,
+      plugins: expect.any(Array),
+    });
+    expect(mocks.resolveReadOnlyChannelPluginsForConfig).toHaveBeenCalledWith(
+      { gateway: {} },
+      {
+        activationSourceConfig: { gateway: {} },
+        includeSetupRuntimeFallback: false,
+      },
+    );
+  });
+
+  it("lets the security audit load configured channel plugins when read-only discovery is incomplete", async () => {
+    mocks.resolveReadOnlyChannelPluginsForConfig.mockReturnValue({
+      plugins: [],
+      configuredChannelIds: ["external"],
+      missingConfiguredChannelIds: ["external"],
+    });
+
+    await resolveStatusSecurityAudit({
+      config: { gateway: {} },
+      sourceConfig: { gateway: {} },
+    });
+
+    expect(mocks.runSecurityAudit).toHaveBeenCalledWith({
+      config: { gateway: {} },
+      sourceConfig: { gateway: {} },
+      deep: false,
+      includeFilesystem: true,
+      includeChannelSecurity: true,
+      loadPluginSecurityCollectors: false,
     });
   });
 
   it("resolves usage summaries with the provided timeout", async () => {
-    await resolveStatusUsageSummary({ timeoutMs: 1234, config: { gateway: {} } });
+    await resolveStatusUsageSummary(1234);
 
-    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith(
-      expect.objectContaining({ timeoutMs: 1234, config: { gateway: {} } }),
-    );
-  });
-
-  it("passes agentDir through to loadProviderUsageSummary", async () => {
-    await resolveStatusUsageSummary({
-      timeoutMs: 1000,
-      config: { gateway: {} },
-      agentDir: "/custom/agent/dir",
-    });
-    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith(
-      expect.objectContaining({ agentDir: "/custom/agent/dir" }),
-    );
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({ timeoutMs: 1234 });
   });
 
   it("resolves gateway health with the shared probe call shape", async () => {
@@ -177,9 +205,7 @@ describe("status-runtime-shared", () => {
       gatewayService: { label: "LaunchAgent" },
       nodeService: { label: "node" },
     });
-    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith(
-      expect.objectContaining({ timeoutMs: 1234, config: { gateway: {} } }),
-    );
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({ timeoutMs: 1234 });
     expect(mocks.callGateway).toHaveBeenNthCalledWith(1, {
       method: "health",
       params: { probe: true },
@@ -259,6 +285,8 @@ describe("status-runtime-shared", () => {
       deep: false,
       includeFilesystem: true,
       includeChannelSecurity: true,
+      loadPluginSecurityCollectors: false,
+      plugins: expect.any(Array),
     });
   });
 });

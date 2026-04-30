@@ -1,0 +1,128 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+
+const OS_SCRIPT_PATHS = [
+  "scripts/e2e/parallels-linux-smoke.sh",
+  "scripts/e2e/parallels-macos-smoke.sh",
+  "scripts/e2e/parallels-windows-smoke.sh",
+];
+const NPM_UPDATE_SCRIPT_PATH = "scripts/e2e/parallels-npm-update-smoke.sh";
+
+describe("Parallels smoke model selection", () => {
+  it("keeps the OpenAI smoke lane on the stable direct API model by default", () => {
+    for (const scriptPath of [...OS_SCRIPT_PATHS, NPM_UPDATE_SCRIPT_PATH]) {
+      const script = readFileSync(scriptPath, "utf8");
+
+      expect(script, scriptPath).toContain(
+        'MODEL_ID="${OPENCLAW_PARALLELS_OPENAI_MODEL:-openai/gpt-5.4-mini}"',
+      );
+      expect(script, scriptPath).toContain("--model <provider/model>");
+      expect(script, scriptPath).toContain("MODEL_ID_EXPLICIT=1");
+    }
+  });
+
+  it("seeds agent workspace state before OS smoke agent turns", () => {
+    for (const scriptPath of OS_SCRIPT_PATHS) {
+      const script = readFileSync(scriptPath, "utf8");
+
+      expect(script, scriptPath).toContain("workspace-state.json");
+      expect(script, scriptPath).toContain("IDENTITY.md");
+      expect(script, scriptPath).toContain("BOOTSTRAP.md");
+      expect(script, scriptPath).toMatch(/--session-id\s+['"]?parallels-/);
+      expect(script, scriptPath).toContain("agents.defaults.skipBootstrap true --strict-json");
+    }
+  });
+
+  it("does not rewrite the plugin allowlist during Parallels smokes", () => {
+    for (const scriptPath of ["scripts/e2e/parallels-windows-smoke.sh", NPM_UPDATE_SCRIPT_PATH]) {
+      const script = readFileSync(scriptPath, "utf8");
+
+      expect(script, scriptPath).not.toContain("release_smoke_plugin_allowlist_json");
+      expect(script, scriptPath).not.toContain(
+        "OPENCLAW_PARALLELS_RELEASE_SMOKE_PLUGIN_ALLOWLIST_JSON",
+      );
+      expect(script, scriptPath).not.toContain("config set plugins.allow");
+      expect(script, scriptPath).not.toContain("config set --batch-file");
+      expect(script, scriptPath).not.toContain("scrub_future_plugin_entries");
+      expect(script, scriptPath).not.toContain("plugins.allow = plugins.allow.filter");
+    }
+  });
+
+  it("keeps packaged smoke scripts from enabling noisy plugin ids explicitly", () => {
+    for (const scriptPath of ["scripts/e2e/parallels-windows-smoke.sh", NPM_UPDATE_SCRIPT_PATH]) {
+      const script = readFileSync(scriptPath, "utf8");
+
+      expect(
+        script.includes('"acpx"') ||
+          script.includes('"device-pair"') ||
+          script.includes('"memory-core"'),
+        scriptPath,
+      ).toBe(false);
+    }
+  });
+
+  it("passes aggregate model overrides into each OS fresh lane", () => {
+    const script = readFileSync(NPM_UPDATE_SCRIPT_PATH, "utf8");
+
+    expect(script).toMatch(/parallels-macos-smoke\.sh"[\s\S]*?--model "\$MODEL_ID"/);
+    expect(script).toMatch(/parallels-windows-smoke\.sh"[\s\S]*?--model "\$MODEL_ID"/);
+    expect(script).toMatch(/parallels-linux-smoke\.sh"[\s\S]*?--model "\$MODEL_ID"/);
+  });
+
+  it("lets the macOS gateway status probe use the full phase budget", () => {
+    const script = readFileSync("scripts/e2e/parallels-macos-smoke.sh", "utf8");
+
+    expect(script).toContain("deadline=$((SECONDS + TIMEOUT_GATEWAY_S))");
+    expect(script).toContain("gateway probe");
+    expect(script).toContain("--url ws://127.0.0.1:18789");
+    expect(script).toContain("gateway status --deep --require-rpc --timeout 30000");
+  });
+
+  it("runs the macOS agent turn through the logged guest runner", () => {
+    const script = readFileSync("scripts/e2e/parallels-macos-smoke.sh", "utf8");
+
+    expect(script).toContain('agent_log="/tmp/openclaw-parallels-agent-turn.log"');
+    expect(script).toContain("run_logged_guest_current_user_sh");
+    expect(script).toContain("retrying macOS agent turn after staged runtime mirror race");
+  });
+
+  it("keeps the Windows first agent turn patient enough for cold package startup", () => {
+    const script = readFileSync("scripts/e2e/parallels-windows-smoke.sh", "utf8");
+
+    expect(script).toContain(
+      'TIMEOUT_AGENT_S="${OPENCLAW_PARALLELS_WINDOWS_AGENT_TIMEOUT_S:-1500}"',
+    );
+  });
+
+  it("keeps the Windows agent helper secret out of its long-lived command line", () => {
+    const script = readFileSync("scripts/e2e/parallels-windows-smoke.sh", "utf8");
+
+    expect(script).not.toContain("[string]$EnvValue");
+    expect(script).not.toContain("'-EnvValue'");
+    expect(script).toContain("Set-Item -Path ('Env:' + '${env_name_q}')");
+  });
+
+  it("keeps Windows smoke config writes on simple strict-json values", () => {
+    const script = readFileSync("scripts/e2e/parallels-windows-smoke.sh", "utf8");
+    const npmUpdateScript = readFileSync(NPM_UPDATE_SCRIPT_PATH, "utf8");
+
+    expect(script).not.toContain("guest_set_release_smoke_plugin_allowlist");
+    expect(script).not.toContain("config set --batch-file");
+    expect(npmUpdateScript).not.toContain("config set --batch-file");
+    expect(script).toContain("config set agents.defaults.skipBootstrap true --strict-json");
+    expect(npmUpdateScript).toContain(
+      "config set agents.defaults.skipBootstrap true --strict-json",
+    );
+  });
+
+  it("keeps Windows gateway reachability on a real deadline with start recovery", () => {
+    const script = readFileSync("scripts/e2e/parallels-windows-smoke.sh", "utf8");
+
+    expect(script).toContain(
+      'GATEWAY_RECOVERY_AFTER_S="${OPENCLAW_PARALLELS_WINDOWS_GATEWAY_RECOVERY_AFTER_S:-180}"',
+    );
+    expect(script).toContain("deadline=$((SECONDS + TIMEOUT_GATEWAY_S))");
+    expect(script).toContain("while (( SECONDS < deadline )); do");
+    expect(script).toContain("run_gateway_daemon_action start");
+  });
+});

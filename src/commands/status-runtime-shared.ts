@@ -1,4 +1,4 @@
-import { resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { resolveReadOnlyChannelPluginsForConfig } from "../channels/plugins/read-only.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { HeartbeatEventPayload } from "../infra/heartbeat-events.js";
 import type { HealthSummary } from "./health.js";
@@ -28,29 +28,26 @@ export async function resolveStatusSecurityAudit(params: {
   sourceConfig: OpenClawConfig;
 }) {
   const { runSecurityAudit } = await loadSecurityAuditModule();
+  const readOnlyPlugins = resolveReadOnlyChannelPluginsForConfig(params.config, {
+    activationSourceConfig: params.sourceConfig,
+    includeSetupRuntimeFallback: false,
+  });
   return await runSecurityAudit({
     config: params.config,
     sourceConfig: params.sourceConfig,
     deep: false,
     includeFilesystem: true,
     includeChannelSecurity: true,
+    loadPluginSecurityCollectors: false,
+    ...(readOnlyPlugins.missingConfiguredChannelIds.length === 0
+      ? { plugins: readOnlyPlugins.plugins }
+      : {}),
   });
 }
 
-export async function resolveStatusUsageSummary(opts?: {
-  timeoutMs?: number;
-  agentDir?: string;
-  config?: OpenClawConfig;
-}) {
+export async function resolveStatusUsageSummary(timeoutMs?: number) {
   const { loadProviderUsageSummary } = await loadProviderUsage();
-  const { loadConfig } = await import("../config/config.js");
-  const config = opts?.config ?? loadConfig();
-  const agentDir = opts?.agentDir ?? resolveAgentDir(config, resolveDefaultAgentId(config));
-  return await loadProviderUsageSummary({
-    timeoutMs: opts?.timeoutMs,
-    agentDir,
-    config,
-  });
+  return await loadProviderUsageSummary({ timeoutMs });
 }
 
 export async function loadStatusProviderUsageModule() {
@@ -129,34 +126,15 @@ export async function resolveStatusRuntimeDetails(params: {
   deep?: boolean;
   gatewayReachable: boolean;
   suppressHealthErrors?: boolean;
-  /** When set, usage auth resolves against this agent (same as `models status` default agent). */
-  usageAgentDir?: string;
-  resolveUsage?: (input: {
-    timeoutMs?: number;
-    config: OpenClawConfig;
-    agentDir?: string;
-  }) => Promise<StatusUsageSummary>;
+  resolveUsage?: (timeoutMs?: number) => Promise<StatusUsageSummary>;
   resolveHealth?: (input: {
     config: OpenClawConfig;
     timeoutMs?: number;
   }) => Promise<StatusGatewayHealth>;
 }) {
-  const resolveUsageSummary =
-    params.resolveUsage ??
-    ((input: { timeoutMs?: number; config: OpenClawConfig; agentDir?: string }) =>
-      resolveStatusUsageSummary({
-        timeoutMs: input.timeoutMs,
-        config: input.config,
-        agentDir: input.agentDir,
-      }));
+  const resolveUsageSummary = params.resolveUsage ?? resolveStatusUsageSummary;
   const resolveGatewayHealthSummary = params.resolveHealth ?? resolveStatusGatewayHealth;
-  const usage = params.usage
-    ? await resolveUsageSummary({
-        timeoutMs: params.timeoutMs,
-        config: params.config,
-        agentDir: params.usageAgentDir,
-      })
-    : undefined;
+  const usage = params.usage ? await resolveUsageSummary(params.timeoutMs) : undefined;
   const health = params.deep
     ? params.suppressHealthErrors
       ? await resolveGatewayHealthSummary({
@@ -201,16 +179,11 @@ export async function resolveStatusRuntimeSnapshot(params: {
   gatewayReachable: boolean;
   includeSecurityAudit?: boolean;
   suppressHealthErrors?: boolean;
-  usageAgentDir?: string;
   resolveSecurityAudit?: (input: {
     config: OpenClawConfig;
     sourceConfig: OpenClawConfig;
   }) => Promise<StatusSecurityAudit>;
-  resolveUsage?: (input: {
-    timeoutMs?: number;
-    config: OpenClawConfig;
-    agentDir?: string;
-  }) => Promise<StatusUsageSummary>;
+  resolveUsage?: (timeoutMs?: number) => Promise<StatusUsageSummary>;
   resolveHealth?: (input: {
     config: OpenClawConfig;
     timeoutMs?: number;
@@ -229,7 +202,6 @@ export async function resolveStatusRuntimeSnapshot(params: {
     deep: params.deep,
     gatewayReachable: params.gatewayReachable,
     suppressHealthErrors: params.suppressHealthErrors,
-    usageAgentDir: params.usageAgentDir,
     resolveUsage: params.resolveUsage,
     resolveHealth: params.resolveHealth,
   });

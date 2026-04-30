@@ -62,10 +62,7 @@ describe("runStatusJsonCommand", () => {
       suppressHealthErrors: true,
     });
 
-    expect(scanStatusJsonFast).toHaveBeenCalledWith(
-      { timeoutMs: 1234, all: true, usage: true },
-      runtime,
-    );
+    expect(scanStatusJsonFast).toHaveBeenCalledWith({ timeoutMs: 1234, all: true }, runtime);
     expect(mocks.resolveStatusJsonOutput).toHaveBeenCalledWith({
       scan,
       opts: { deep: true, usage: true, timeoutMs: 1234, all: true },

@@ -94,6 +94,9 @@ describe("doctor command", () => {
     const missingDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-missing-state-"));
     fs.rmSync(missingDir, { recursive: true, force: true });
     process.env.OPENCLAW_STATE_DIR = missingDir;
+    doctorCommand = await loadDoctorCommandForTest({
+      unmockModules: ["../flows/doctor-health-contributions.js", "./doctor-state-integrity.js"],
+    });
     await doctorCommand(createDoctorRuntime(), {
       nonInteractive: true,
       workspaceSuggestions: false,
@@ -370,52 +373,5 @@ describe("doctor command", () => {
     expect(String(gatewayAuthNote?.[0])).toContain(
       "Doctor will not overwrite gateway.auth.token with a plaintext value.",
     );
-  });
-
-  it("skips gateway auth warning when gateway token SecretRef resolves", async () => {
-    mockDoctorConfigSnapshot({
-      config: {
-        gateway: {
-          mode: "local",
-          auth: {
-            mode: "token",
-            token: {
-              source: "env",
-              provider: "default",
-              id: "OPENCLAW_GATEWAY_TOKEN",
-            },
-          },
-        },
-        secrets: {
-          providers: {
-            default: { source: "env" },
-          },
-        },
-      },
-    });
-
-    const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
-    process.env.OPENCLAW_GATEWAY_TOKEN = "resolved-secretref-token";
-    try {
-      await doctorCommand(createDoctorRuntime(), {
-        nonInteractive: true,
-        workspaceSuggestions: false,
-      });
-    } finally {
-      if (previousToken === undefined) {
-        delete process.env.OPENCLAW_GATEWAY_TOKEN;
-      } else {
-        process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
-      }
-    }
-
-    const warned = terminalNoteMock.mock.calls.some(
-      ([message, title]) =>
-        title === "Gateway auth" &&
-        String(message).includes(
-          "Gateway token is managed via SecretRef and is currently unavailable.",
-        ),
-    );
-    expect(warned).toBe(false);
   });
 });

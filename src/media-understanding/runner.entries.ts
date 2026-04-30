@@ -4,9 +4,9 @@ import {
   collectProviderApiKeysForExecution,
   executeWithApiKeyRotation,
 } from "../agents/api-key-rotation.js";
-import { requireApiKey, resolveApiKeyForProvider } from "../agents/model-auth.js";
 import {
-  mergeProviderRequestOverrides,
+  mergeModelProviderRequestOverrides,
+  sanitizeConfiguredModelProviderRequest,
   sanitizeConfiguredProviderRequest,
 } from "../agents/provider-request-config.js";
 import type { MsgContext } from "../auto-reply/templating.js";
@@ -45,6 +45,26 @@ import type {
 import { estimateBase64Size, resolveVideoMaxBase64Bytes } from "./video.js";
 
 export type ProviderRegistry = Map<string, MediaUnderstandingProvider>;
+type ResolveApiKeyForProvider = typeof import("../agents/model-auth.js").resolveApiKeyForProvider;
+type RequireApiKey = typeof import("../agents/model-auth.js").requireApiKey;
+
+let cachedModelAuth: {
+  resolveApiKeyForProvider: ResolveApiKeyForProvider;
+  requireApiKey: RequireApiKey;
+} | null = null;
+
+async function loadModelAuth() {
+  cachedModelAuth ??= await import("../agents/model-auth.js");
+  return cachedModelAuth;
+}
+
+function resolveLiteralProviderApiKey(params: {
+  cfg: OpenClawConfig;
+  providerId: string;
+}): string | null {
+  const value = params.cfg.models?.providers?.[params.providerId]?.apiKey;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
 function sanitizeProviderHeaders(
   headers: Record<string, unknown> | undefined,
@@ -393,6 +413,20 @@ async function resolveProviderExecutionAuth(params: {
   entry: MediaUnderstandingModelConfig;
   agentDir?: string;
 }) {
+  const literalApiKey = resolveLiteralProviderApiKey({
+    cfg: params.cfg,
+    providerId: params.providerId,
+  });
+  if (literalApiKey) {
+    return {
+      apiKeys: collectProviderApiKeysForExecution({
+        provider: params.providerId,
+        primaryApiKey: literalApiKey,
+      }),
+      providerConfig: params.cfg.models?.providers?.[params.providerId],
+    };
+  }
+  const { requireApiKey, resolveApiKeyForProvider } = await loadModelAuth();
   const auth = await resolveApiKeyForProvider({
     provider: params.providerId,
     cfg: params.cfg,
@@ -429,7 +463,8 @@ async function resolveProviderExecutionContext(params: {
     ...sanitizeProviderHeaders(params.entry.headers as Record<string, unknown> | undefined),
   };
   const headers = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
-  const request = mergeProviderRequestOverrides(
+  const request = mergeModelProviderRequestOverrides(
+    sanitizeConfiguredModelProviderRequest(providerConfig?.request),
     sanitizeConfiguredProviderRequest(params.config?.request),
     sanitizeConfiguredProviderRequest(params.entry.request),
   );

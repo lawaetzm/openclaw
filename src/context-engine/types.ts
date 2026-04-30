@@ -22,6 +22,10 @@ export type CompactResult = {
     tokensBefore: number;
     tokensAfter?: number;
     details?: unknown;
+    /** Session id after compaction, when the runtime rotated transcripts. */
+    sessionId?: string;
+    /** Session file after compaction, when the runtime rotated transcripts. */
+    sessionFile?: string;
   };
 };
 
@@ -140,6 +144,10 @@ export type ContextEngineRuntimeContext = Record<string, unknown> & {
    * consuming deferred compaction debt.
    */
   allowDeferredCompactionExecution?: boolean;
+  /** Runtime-resolved context window budget for the active model call. */
+  tokenBudget?: number;
+  /** Best-effort current prompt/context token estimate for this turn. */
+  currentTokenCount?: number;
   /** Optional prompt-cache telemetry for cache-aware engines. */
   promptCache?: ContextEnginePromptCacheInfo;
   /**
@@ -278,6 +286,11 @@ export interface ContextEngine {
   prepareSubagentSpawn?(params: {
     parentSessionKey: string;
     childSessionKey: string;
+    contextMode?: "isolated" | "fork";
+    parentSessionId?: string;
+    parentSessionFile?: string;
+    childSessionId?: string;
+    childSessionFile?: string;
     ttlMs?: number;
   }): Promise<SubagentSpawnPreparation | undefined>;
 

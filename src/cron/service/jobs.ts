@@ -154,15 +154,19 @@ function resolveEveryAnchorMs(params: {
 }
 
 export function assertSupportedJobSpec(job: Pick<CronJob, "sessionTarget" | "payload">) {
-  const sessionTarget = typeof job.sessionTarget === "string" ? job.sessionTarget : "";
-  const isIsolatedLike =
-    sessionTarget === "isolated" ||
-    sessionTarget === "current" ||
-    sessionTarget.startsWith("session:");
-  if (sessionTarget.startsWith("session:")) {
-    assertSafeCronSessionTargetId(sessionTarget.slice(8));
+  if (typeof job.sessionTarget !== "string") {
+    throw new Error(
+      'cron job is missing sessionTarget; expected "main", "isolated", "current", or "session:<id>"',
+    );
   }
-  if (sessionTarget === "main" && job.payload.kind !== "systemEvent") {
+  const isIsolatedLike =
+    job.sessionTarget === "isolated" ||
+    job.sessionTarget === "current" ||
+    job.sessionTarget.startsWith("session:");
+  if (job.sessionTarget.startsWith("session:")) {
+    assertSafeCronSessionTargetId(job.sessionTarget.slice(8));
+  }
+  if (job.sessionTarget === "main" && job.payload.kind !== "systemEvent") {
     throw new Error('main cron jobs require payload.kind="systemEvent"');
   }
   if (isIsolatedLike && job.payload.kind !== "agentTurn") {
@@ -190,7 +194,6 @@ function assertMainSessionAgentId(
 }
 
 function assertDeliverySupport(job: Pick<CronJob, "sessionTarget" | "delivery">) {
-  const sessionTarget = typeof job.sessionTarget === "string" ? job.sessionTarget : "";
   // No delivery object or mode is "none" -- nothing to validate.
   if (!job.delivery || job.delivery.mode === "none") {
     return;
@@ -205,9 +208,9 @@ function assertDeliverySupport(job: Pick<CronJob, "sessionTarget" | "delivery">)
     return;
   }
   const isIsolatedLike =
-    sessionTarget === "isolated" ||
-    sessionTarget === "current" ||
-    sessionTarget.startsWith("session:");
+    job.sessionTarget === "isolated" ||
+    job.sessionTarget === "current" ||
+    job.sessionTarget.startsWith("session:");
   if (!isIsolatedLike) {
     throw new Error('cron channel delivery config is only supported for sessionTarget="isolated"');
   }
@@ -857,6 +860,10 @@ function mergeCronFailureAlert(
         : -1;
     next.cooldownMs = cooldownMs >= 0 ? Math.floor(cooldownMs) : undefined;
   }
+  if ("includeSkipped" in patch) {
+    next.includeSkipped =
+      typeof patch.includeSkipped === "boolean" ? patch.includeSkipped : undefined;
+  }
   if ("mode" in patch) {
     const mode = normalizeOptionalString(patch.mode) ?? "";
     next.mode = mode === "announce" || mode === "webhook" ? mode : undefined;
@@ -887,7 +894,7 @@ export function isJobDue(job: CronJob, nowMs: number, opts: { forced: boolean })
 }
 
 export function resolveJobPayloadTextForMain(job: CronJob): string | undefined {
-  if (typeof job.payload?.kind !== "string" || job.payload.kind !== "systemEvent") {
+  if (job.payload.kind !== "systemEvent") {
     return undefined;
   }
   const text = normalizePayloadToSystemText(job.payload);

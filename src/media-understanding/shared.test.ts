@@ -1,12 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { fetchWithSsrFGuardMock, hasEnvHttpProxyConfiguredMock, matchesNoProxyMock } = vi.hoisted(
-  () => ({
-    fetchWithSsrFGuardMock: vi.fn(),
-    hasEnvHttpProxyConfiguredMock: vi.fn(() => false),
-    matchesNoProxyMock: vi.fn(() => false),
-  }),
-);
+const { fetchWithSsrFGuardMock, shouldUseEnvHttpProxyForUrlMock } = vi.hoisted(() => ({
+  fetchWithSsrFGuardMock: vi.fn(),
+  shouldUseEnvHttpProxyForUrlMock: vi.fn(() => false),
+}));
 
 vi.mock("../infra/net/fetch-guard.js", async () => {
   const actual = await vi.importActual<typeof import("../infra/net/fetch-guard.js")>(
@@ -24,26 +21,151 @@ vi.mock("../infra/net/proxy-env.js", async () => {
   );
   return {
     ...actual,
-    hasEnvHttpProxyConfigured: hasEnvHttpProxyConfiguredMock,
-    matchesNoProxy: matchesNoProxyMock,
+    shouldUseEnvHttpProxyForUrl: shouldUseEnvHttpProxyForUrlMock,
   };
 });
 
 import {
+  createProviderOperationDeadline,
   fetchWithTimeoutGuarded,
+  pollProviderOperationJson,
   postJsonRequest,
   postTranscriptionRequest,
   readErrorResponse,
+  resolveProviderOperationTimeoutMs,
   resolveProviderHttpRequestConfig,
+  waitProviderOperationPollInterval,
 } from "./shared.js";
 
 beforeEach(() => {
-  hasEnvHttpProxyConfiguredMock.mockReturnValue(false);
-  matchesNoProxyMock.mockReturnValue(false);
+  shouldUseEnvHttpProxyForUrlMock.mockReturnValue(false);
 });
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
+});
+
+describe("provider operation deadlines", () => {
+  it("keeps default per-call timeouts when no operation timeout is configured", () => {
+    const deadline = createProviderOperationDeadline({
+      label: "video generation",
+    });
+
+    expect(resolveProviderOperationTimeoutMs({ deadline, defaultTimeoutMs: 60_000 })).toBe(60_000);
+  });
+
+  it("clamps per-call timeouts to the remaining operation deadline", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+
+    const deadline = createProviderOperationDeadline({
+      label: "video generation",
+      timeoutMs: 5_000,
+    });
+
+    vi.setSystemTime(4_250);
+
+    expect(resolveProviderOperationTimeoutMs({ deadline, defaultTimeoutMs: 60_000 })).toBe(1_750);
+  });
+
+  it("throws once the operation deadline has expired", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+
+    const deadline = createProviderOperationDeadline({
+      label: "video generation",
+      timeoutMs: 2_000,
+    });
+
+    vi.setSystemTime(3_001);
+
+    expect(() => resolveProviderOperationTimeoutMs({ deadline, defaultTimeoutMs: 60_000 })).toThrow(
+      "video generation timed out after 2000ms",
+    );
+  });
+
+  it("clamps poll waits to the remaining operation deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+
+    const deadline = createProviderOperationDeadline({
+      label: "video generation",
+      timeoutMs: 1_000,
+    });
+    const wait = waitProviderOperationPollInterval({
+      deadline,
+      pollIntervalMs: 10_000,
+    });
+
+    await vi.advanceTimersByTimeAsync(999);
+    let settled = false;
+    void wait.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(wait).resolves.toBeUndefined();
+  });
+
+  it("polls provider status JSON until a payload is complete", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "in_progress" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "completed" })));
+
+    const result = pollProviderOperationJson<{ status?: string }>({
+      url: "https://api.example.com/v1/videos/task-1",
+      headers: new Headers({ authorization: "Bearer test" }),
+      deadline: createProviderOperationDeadline({
+        label: "video generation task task-1",
+        timeoutMs: 10_000,
+      }),
+      defaultTimeoutMs: 5_000,
+      fetchFn,
+      maxAttempts: 3,
+      pollIntervalMs: 1_000,
+      requestFailedMessage: "status failed",
+      timeoutMessage: "task timed out",
+      isComplete: (payload) => payload.status === "completed",
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(result).resolves.toEqual({ status: "completed" });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws provider failure messages while polling status JSON", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: "failed", error: { message: "model rejected" } })),
+      );
+
+    await expect(
+      pollProviderOperationJson<{ status?: string; error?: { message?: string } }>({
+        url: "https://api.example.com/v1/videos/task-1",
+        headers: new Headers(),
+        deadline: createProviderOperationDeadline({
+          label: "video generation task task-1",
+        }),
+        defaultTimeoutMs: 5_000,
+        fetchFn,
+        maxAttempts: 3,
+        pollIntervalMs: 1_000,
+        requestFailedMessage: "status failed",
+        timeoutMessage: "task timed out",
+        isComplete: (payload) => payload.status === "completed",
+        getFailureMessage: (payload) =>
+          payload.status === "failed" ? payload.error?.message : undefined,
+      }),
+    ).rejects.toThrow("model rejected");
+  });
 });
 
 describe("resolveProviderHttpRequestConfig", () => {
@@ -290,7 +412,7 @@ describe("fetchWithTimeoutGuarded", () => {
   });
 
   it("does not set a guarded fetch mode when no HTTP proxy env is configured", async () => {
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(false);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(false);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://example.com",
@@ -305,7 +427,7 @@ describe("fetchWithTimeoutGuarded", () => {
   });
 
   it("auto-selects trusted env proxy mode when HTTP proxy env is configured", async () => {
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(true);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(true);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://api.minimax.io",
@@ -327,7 +449,7 @@ describe("fetchWithTimeoutGuarded", () => {
   });
 
   it("respects an explicit mode from the caller when HTTP proxy env is configured", async () => {
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(true);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(true);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://api.example.com",
@@ -346,7 +468,7 @@ describe("fetchWithTimeoutGuarded", () => {
   });
 
   it("auto-upgrades transcription requests to trusted env proxy when proxy env is configured", async () => {
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(true);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(true);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://api.openai.com",
@@ -368,7 +490,7 @@ describe("fetchWithTimeoutGuarded", () => {
   });
 
   it("forwards an explicit mode override through postJsonRequest even when proxy env is configured", async () => {
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(true);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(true);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://api.example.com",
@@ -391,7 +513,7 @@ describe("fetchWithTimeoutGuarded", () => {
   });
 
   it("forwards an explicit mode override through postTranscriptionRequest even when proxy env is configured", async () => {
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(true);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(true);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://api.example.com",
@@ -414,11 +536,11 @@ describe("fetchWithTimeoutGuarded", () => {
   });
 
   it("does not auto-upgrade when only ALL_PROXY is configured (HTTP(S) proxy gate)", async () => {
-    // ALL_PROXY is ignored by EnvHttpProxyAgent; `hasEnvHttpProxyConfigured`
+    // ALL_PROXY is ignored by EnvHttpProxyAgent; the shared proxy URL helper
     // reflects that by returning false when only ALL_PROXY is set. Auto-upgrade
     // must NOT fire, otherwise the request would skip pinned-DNS/SSRF checks
     // and then be dispatched directly.
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(false);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(false);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://api.example.com",
@@ -441,7 +563,7 @@ describe("fetchWithTimeoutGuarded", () => {
     // Callers with custom proxy URL / proxyTls / connect options must keep
     // control over the dispatcher. Auto-upgrade would build an
     // EnvHttpProxyAgent that silently drops those overrides.
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(true);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(true);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://api.example.com",
@@ -468,8 +590,7 @@ describe("fetchWithTimeoutGuarded", () => {
     // for NO_PROXY matches, but in TRUSTED_ENV_PROXY mode fetchWithSsrFGuard
     // skips pinned-DNS checks — so auto-upgrading those targets would bypass
     // SSRF protection. Keep strict mode for NO_PROXY matches.
-    hasEnvHttpProxyConfiguredMock.mockReturnValue(true);
-    matchesNoProxyMock.mockReturnValue(true);
+    shouldUseEnvHttpProxyForUrlMock.mockReturnValue(false);
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(null, { status: 200 }),
       finalUrl: "https://internal.corp.example",

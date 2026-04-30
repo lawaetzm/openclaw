@@ -1,10 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createProviderUsageFetch, makeResponse } from "../test-utils/provider-usage-fetch.js";
+import { createProviderUsageFetch } from "../test-utils/provider-usage-fetch.js";
 
 const resolveProviderUsageSnapshotWithPluginMock = vi.fn();
 
 vi.mock("../config/config.js", () => ({
-  loadConfig: () => ({}),
+  getRuntimeConfig: () => ({}),
 }));
 
 vi.mock("../plugins/provider-runtime.js", async () => {
@@ -70,45 +70,5 @@ describe("provider-usage.load plugin boundary", () => {
         }),
       }),
     );
-  });
-
-  it("falls back to built-in codex usage fetch when plugin loading fails", async () => {
-    resolveProviderUsageSnapshotWithPluginMock.mockRejectedValueOnce(
-      Object.assign(new Error("plugin load failed: slack"), {
-        name: "PluginLoadFailureError",
-      }),
-    );
-    const mockFetch = createProviderUsageFetch(async (_url, init) => {
-      const headers = (init?.headers as Record<string, string> | undefined) ?? {};
-      expect(headers["ChatGPT-Account-Id"]).toBe("acct-1");
-      return makeResponse(200, {
-        rate_limit: {
-          primary_window: {
-            limit_window_seconds: 10_800,
-            used_percent: 21,
-            reset_at: 1_700_000_000,
-          },
-        },
-        plan_type: "Team",
-      });
-    });
-
-    await expect(
-      loadProviderUsageSummary({
-        now: usageNow,
-        auth: [{ provider: "openai-codex", token: "codex-token", accountId: "acct-1" }],
-        fetch: mockFetch as unknown as typeof fetch,
-      }),
-    ).resolves.toEqual({
-      updatedAt: usageNow,
-      providers: [
-        {
-          provider: "openai-codex",
-          displayName: "Codex",
-          windows: [{ label: "3h", usedPercent: 21, resetAt: 1_700_000_000_000 }],
-          plan: "Team",
-        },
-      ],
-    });
   });
 });

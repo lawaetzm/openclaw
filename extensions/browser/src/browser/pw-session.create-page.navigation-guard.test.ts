@@ -1,37 +1,18 @@
-import { chromium } from "playwright-core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SsrFBlockedError } from "../infra/net/ssrf.js";
-import * as chromeModule from "./chrome.js";
+import "../test-support/browser-security.mock.js";
 import { BrowserTabNotFoundError } from "./errors.js";
 import { InvalidBrowserNavigationUrlError } from "./navigation-guard.js";
 import * as navigationGuardModule from "./navigation-guard.js";
-import {
-  BlockedBrowserTargetError,
-  closePlaywrightBrowserConnection,
-  createPageViaPlaywright,
-  forceDisconnectPlaywrightForTarget,
-  getPageForTargetId,
-  gotoPageWithNavigationGuard,
-  listPagesViaPlaywright,
-} from "./pw-session.js";
+import { connectOverCdpMock, getChromeWebSocketUrlMock } from "./pw-session.mock-setup.js";
 
-vi.mock("openclaw/plugin-sdk/browser-security-runtime", async () => {
-  const actual = await vi.importActual<
-    typeof import("openclaw/plugin-sdk/browser-security-runtime")
-  >("openclaw/plugin-sdk/browser-security-runtime");
-  const lookupFn = async (_hostname: string, options?: { all?: boolean }) => {
-    const result = { address: "93.184.216.34", family: 4 };
-    return options?.all === true ? [result] : result;
-  };
-  return {
-    ...actual,
-    resolvePinnedHostnameWithPolicy: (hostname: string, params: object = {}) =>
-      actual.resolvePinnedHostnameWithPolicy(hostname, { ...params, lookupFn: lookupFn as never }),
-  };
-});
-
-const connectOverCdpSpy = vi.spyOn(chromium, "connectOverCDP");
-const getChromeWebSocketUrlSpy = vi.spyOn(chromeModule, "getChromeWebSocketUrl");
+let BlockedBrowserTargetError: typeof import("./pw-session.js").BlockedBrowserTargetError;
+let closePlaywrightBrowserConnection: typeof import("./pw-session.js").closePlaywrightBrowserConnection;
+let createPageViaPlaywright: typeof import("./pw-session.js").createPageViaPlaywright;
+let forceDisconnectPlaywrightForTarget: typeof import("./pw-session.js").forceDisconnectPlaywrightForTarget;
+let getPageForTargetId: typeof import("./pw-session.js").getPageForTargetId;
+let gotoPageWithNavigationGuard: typeof import("./pw-session.js").gotoPageWithNavigationGuard;
+let listPagesViaPlaywright: typeof import("./pw-session.js").listPagesViaPlaywright;
 
 const PROXY_ENV_KEYS = [
   "ALL_PROXY",
@@ -115,8 +96,8 @@ function installBrowserMocks() {
     close: browserClose,
   } as unknown as import("playwright-core").Browser;
 
-  connectOverCdpSpy.mockResolvedValue(browser);
-  getChromeWebSocketUrlSpy.mockResolvedValue(null);
+  connectOverCdpMock.mockResolvedValue(browser);
+  getChromeWebSocketUrlMock.mockResolvedValue(null);
 
   const getBrowserDisconnectedHandler = () =>
     browserOn.mock.calls.find((call) => call[0] === "disconnected")?.[1] as
@@ -200,10 +181,22 @@ beforeEach(() => {
   }
 });
 
+beforeAll(async () => {
+  ({
+    BlockedBrowserTargetError,
+    closePlaywrightBrowserConnection,
+    createPageViaPlaywright,
+    forceDisconnectPlaywrightForTarget,
+    getPageForTargetId,
+    gotoPageWithNavigationGuard,
+    listPagesViaPlaywright,
+  } = await import("./pw-session.js"));
+});
+
 afterEach(async () => {
   vi.unstubAllEnvs();
-  connectOverCdpSpy.mockClear();
-  getChromeWebSocketUrlSpy.mockClear();
+  connectOverCdpMock.mockClear();
+  getChromeWebSocketUrlMock.mockClear();
   await closePlaywrightBrowserConnection().catch(() => {});
 });
 
@@ -355,6 +348,34 @@ describe("pw-session createPageViaPlaywright navigation guard", () => {
     });
 
     expect(created.targetId).toBe("TARGET_1");
+    expect(pageGoto).toHaveBeenCalledTimes(1);
+    expect(pageClose).not.toHaveBeenCalled();
+  });
+
+  it("ignores already-handled route races during guarded navigation", async () => {
+    const { pageGoto, pageClose, getRouteHandler, mainFrame } = installBrowserMocks();
+    const route = createMockRoute({
+      continue: vi.fn(async () => {
+        throw new Error("Route is already handled");
+      }),
+    });
+    pageGoto.mockImplementationOnce(async () => {
+      await dispatchMockNavigation({
+        getRouteHandler,
+        mainFrame,
+        url: "https://example.com",
+        route,
+      });
+      return null;
+    });
+
+    const created = await createPageViaPlaywright({
+      cdpUrl: "http://127.0.0.1:18792",
+      url: "https://example.com",
+    });
+
+    expect(created.targetId).toBe("TARGET_1");
+    expect(route.continue).toHaveBeenCalledTimes(1);
     expect(pageGoto).toHaveBeenCalledTimes(1);
     expect(pageClose).not.toHaveBeenCalled();
   });
