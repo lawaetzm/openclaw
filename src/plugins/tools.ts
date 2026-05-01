@@ -167,6 +167,19 @@ export function resolvePluginTools(params: {
       blockedPlugins.add(entry.pluginId);
       continue;
     }
+    if (entry.optional && (entry.names?.length ?? 0) > 0) {
+      const explicitlyAllowed = entry.names!.some((toolName) =>
+        isOptionalToolAllowed({
+          toolName,
+          pluginId: entry.pluginId,
+          allowlist,
+        }),
+      );
+      if (!explicitlyAllowed) {
+        continue;
+      }
+    }
+
     let resolved: AnyAgentTool | AnyAgentTool[] | null | undefined = null;
     try {
       resolved = entry.factory(params.context);

@@ -4,6 +4,7 @@ type MockRegistryToolEntry = {
   pluginId: string;
   optional: boolean;
   source: string;
+  names?: string[];
   factory: (ctx: unknown) => unknown;
 };
 
@@ -95,6 +96,7 @@ function createOptionalDemoEntry(): MockRegistryToolEntry {
     pluginId: "optional-demo",
     optional: true,
     source: "/tmp/optional-demo.js",
+    names: ["optional_tool"],
     factory: () => makeTool("optional_tool"),
   };
 }
@@ -228,11 +230,22 @@ describe("resolvePluginTools optional tools", () => {
     resetPluginRuntimeStateForTest?.();
   });
 
-  it("skips optional tools without explicit allowlist", () => {
-    setOptionalDemoRegistry();
+  it("skips optional tool factories without explicit allowlist", () => {
+    const factory = vi.fn(() => makeTool("optional_tool"));
+    setRegistry([
+      {
+        pluginId: "optional-demo",
+        optional: true,
+        source: "/tmp/optional-demo.js",
+        names: ["optional_tool"],
+        factory,
+      },
+    ]);
+
     const tools = resolveOptionalDemoTools();
 
     expect(tools).toHaveLength(0);
+    expect(factory).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -347,6 +360,7 @@ describe("resolvePluginTools optional tools", () => {
         pluginId: "optional-demo",
         optional: true,
         source: "/tmp/optional-demo.js",
+        names: ["optional_tool"],
         factory: () => createMalformedTool("optional_tool"),
       },
     ]);
