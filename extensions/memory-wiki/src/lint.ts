@@ -12,7 +12,7 @@ import {
 import { compileMemoryWikiVault } from "./compile.js";
 import type { ResolvedMemoryWikiConfig } from "./config.js";
 import { appendMemoryWikiLog } from "./log.js";
-import { renderWikiMarkdown, type WikiPageSummary } from "./markdown.js";
+import { renderWikiMarkdown, slugifyWikiSegment, type WikiPageSummary } from "./markdown.js";
 
 export type MemoryWikiLintIssue = {
   severity: "error" | "warning";
@@ -50,18 +50,56 @@ function toExpectedPageType(page: WikiPageSummary): string {
   return page.kind;
 }
 
+function normalizeWikiLinkTarget(value: string): string {
+  return value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\.md$/i, "")
+    .replace(/^\.\/+/g, "")
+    .replace(/^(?:\.\.\/)+/g, "")
+    .replace(/\/+$/g, "")
+    .toLocaleLowerCase();
+}
+
+function addValidWikiLinkTarget(validTargets: Set<string>, value: string | undefined): void {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return;
+  }
+  validTargets.add(trimmed);
+  validTargets.add(normalizeWikiLinkTarget(trimmed));
+  validTargets.add(slugifyWikiSegment(trimmed));
+}
+
+function toWikiLinkLookupTargets(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+  return [trimmed, normalizeWikiLinkTarget(trimmed), slugifyWikiSegment(trimmed)];
+}
+
 function collectBrokenLinkIssues(pages: WikiPageSummary[]): MemoryWikiLintIssue[] {
   const validTargets = new Set<string>();
   for (const page of pages) {
     const withoutExtension = page.relativePath.replace(/\.md$/i, "");
-    validTargets.add(withoutExtension);
-    validTargets.add(path.basename(withoutExtension));
+    addValidWikiLinkTarget(validTargets, page.relativePath);
+    addValidWikiLinkTarget(validTargets, withoutExtension);
+    addValidWikiLinkTarget(validTargets, path.basename(withoutExtension));
+    addValidWikiLinkTarget(validTargets, page.title);
+    addValidWikiLinkTarget(validTargets, page.id);
+    for (const alias of page.aliases) {
+      addValidWikiLinkTarget(validTargets, alias);
+    }
   }
 
   const issues: MemoryWikiLintIssue[] = [];
   for (const page of pages) {
+    if (page.kind === "source") {
+      continue;
+    }
     for (const linkTarget of page.linkTargets) {
-      if (!validTargets.has(linkTarget)) {
+      if (!toWikiLinkLookupTargets(linkTarget).some((target) => validTargets.has(target))) {
         issues.push({
           severity: "warning",
           category: "links",

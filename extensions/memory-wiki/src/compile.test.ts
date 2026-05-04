@@ -85,6 +85,34 @@ describe("compileMemoryWikiVault", () => {
     ).resolves.toContain('"text":"Alpha is the canonical source page."');
   });
 
+  it("includes markdown pages in nested wiki directories", async () => {
+    const { rootDir, config } = await createVault({
+      rootDir: nextCaseRoot(),
+      initialize: true,
+    });
+
+    await fs.mkdir(path.join(rootDir, "entities", "contacts"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootDir, "entities", "contacts", "sidsel-skjold.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "entity",
+          id: "entity.sidsel-skjold",
+          title: "Sidsel Skjold",
+        },
+        body: "# Sidsel Skjold\n",
+      }),
+      "utf8",
+    );
+
+    const result = await compileMemoryWikiVault(config);
+
+    expect(result.pageCounts.entity).toBe(1);
+    await expect(
+      fs.readFile(path.join(rootDir, "entities", "index.md"), "utf8"),
+    ).resolves.toContain("[Sidsel Skjold](entities/contacts/sidsel-skjold.md)");
+  });
+
   it("renders obsidian-friendly links when configured", async () => {
     const { rootDir, config } = await createVault({
       rootDir: nextCaseRoot(),

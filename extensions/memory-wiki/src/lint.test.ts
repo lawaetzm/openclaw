@@ -116,4 +116,97 @@ describe("lintMemoryWikiVault", () => {
     await expect(fs.readFile(result.reportPath, "utf8")).resolves.toContain("### Contradictions");
     await expect(fs.readFile(result.reportPath, "utf8")).resolves.toContain("### Open Questions");
   });
+
+  it("resolves wikilinks by page title, alias, id, slug, and relative path", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-link-lint-",
+      config: {
+        vault: { renderMode: "obsidian" },
+      },
+    });
+    await Promise.all(
+      ["entities", "sources", "syntheses"].map((dir) =>
+        fs.mkdir(path.join(rootDir, dir), { recursive: true }),
+      ),
+    );
+
+    await fs.writeFile(
+      path.join(rootDir, "entities", "sidsel-skjold.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "entity",
+          id: "entity.sidsel-skjold",
+          title: "Sidsel Skjold",
+          aliases: ["Sidsel"],
+          sourceIds: ["source.bridge.sidsel"],
+        },
+        body: "# Sidsel Skjold\n",
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(rootDir, "sources", "bridge-sidsel.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.bridge.sidsel",
+          title: "Bridge Sidsel",
+          sourceType: "memory-bridge",
+          sourcePath: "memory/2026-05-04.md",
+          bridgeRelativePath: "memory/2026-05-04.md",
+          bridgeWorkspaceDir: "/workspace",
+        },
+        body: "# Bridge Sidsel\n",
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(rootDir, "syntheses", "link-check.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "synthesis",
+          id: "synthesis.link-check",
+          title: "Link Check",
+          sourceIds: ["source.bridge.sidsel"],
+          updatedAt: "2099-01-01T00:00:00.000Z",
+        },
+        body: "# Link Check\n\n[[Sidsel Skjold]] [[Sidsel]] [[entity.sidsel-skjold]] [[sidsel-skjold]] [[entities/sidsel-skjold]] [Sidsel path](../entities/sidsel-skjold.md) [[missing-page]]\n",
+      }),
+      "utf8",
+    );
+
+    const result = await lintMemoryWikiVault(config);
+    const brokenLinks = result.issues.filter(
+      (issue) => issue.code === "broken-wikilink" && issue.path === "syntheses/link-check.md",
+    );
+
+    expect(brokenLinks).toHaveLength(1);
+    expect(brokenLinks[0]?.message).toBe("Broken wikilink target `missing-page`.");
+  });
+
+  it("does not lint raw source page wikilinks as broken knowledge links", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-source-link-lint-",
+      config: {
+        vault: { renderMode: "obsidian" },
+      },
+    });
+    await fs.mkdir(path.join(rootDir, "sources"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootDir, "sources", "raw-slack.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.raw-slack",
+          title: "Raw Slack",
+        },
+        body: "# Raw Slack\n\n[[reply_to_current]] [[not-a-canonical-page]]\n",
+      }),
+      "utf8",
+    );
+
+    const result = await lintMemoryWikiVault(config);
+
+    expect(result.issues.some((issue) => issue.code === "broken-wikilink")).toBe(false);
+  });
 });

@@ -339,11 +339,19 @@ export type RefreshMemoryWikiIndexesResult = {
 async function collectMarkdownFiles(rootDir: string, relativeDir: string): Promise<string[]> {
   const dirPath = path.join(rootDir, relativeDir);
   const entries = await fs.readdir(dirPath, { withFileTypes: true }).catch(() => []);
-  return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => path.join(relativeDir, entry.name))
-    .filter((relativePath) => path.basename(relativePath) !== "index.md")
-    .toSorted((left, right) => left.localeCompare(right));
+  const nested = await Promise.all(
+    entries.map(async (entry) => {
+      const entryRelativePath = path.join(relativeDir, entry.name);
+      if (entry.isDirectory()) {
+        return collectMarkdownFiles(rootDir, entryRelativePath);
+      }
+      if (entry.isFile() && entry.name.endsWith(".md") && entry.name !== "index.md") {
+        return [entryRelativePath];
+      }
+      return [];
+    }),
+  );
+  return nested.flat().toSorted((left, right) => left.localeCompare(right));
 }
 
 async function readPageSummaries(rootDir: string): Promise<WikiPageSummary[]> {
