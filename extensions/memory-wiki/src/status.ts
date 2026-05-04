@@ -93,27 +93,41 @@ async function collectVaultCounts(vaultPath: string): Promise<{
     other: 0,
   };
   const dirs = ["entities", "concepts", "sources", "syntheses", "reports"] as const;
-  for (const dir of dirs) {
+  const collectMarkdownFiles = async (relativeDir: string): Promise<string[]> => {
     const entries = await fs
-      .readdir(path.join(vaultPath, dir), { withFileTypes: true })
+      .readdir(path.join(vaultPath, relativeDir), { withFileTypes: true })
       .catch(() => []);
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".md") || entry.name === "index.md") {
-        continue;
-      }
-      const kind = inferWikiPageKind(path.join(dir, entry.name));
+    const nested = await Promise.all(
+      entries.map(async (entry) => {
+        const relativePath = path.join(relativeDir, entry.name);
+        if (entry.isDirectory()) {
+          return collectMarkdownFiles(relativePath);
+        }
+        if (entry.isFile() && entry.name.endsWith(".md") && entry.name !== "index.md") {
+          return [relativePath];
+        }
+        return [];
+      }),
+    );
+    return nested.flat();
+  };
+
+  for (const dir of dirs) {
+    const relativePaths = await collectMarkdownFiles(dir);
+    for (const relativePath of relativePaths) {
+      const kind = inferWikiPageKind(relativePath);
       if (kind) {
         pageCounts[kind] += 1;
       }
       if (dir === "sources") {
-        const absolutePath = path.join(vaultPath, dir, entry.name);
+        const absolutePath = path.join(vaultPath, relativePath);
         const raw = await fs.readFile(absolutePath, "utf8").catch(() => null);
         if (!raw) {
           continue;
         }
         const page = toWikiPageSummary({
           absolutePath,
-          relativePath: path.join(dir, entry.name),
+          relativePath,
           raw,
         });
         if (!page) {

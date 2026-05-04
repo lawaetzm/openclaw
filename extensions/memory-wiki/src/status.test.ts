@@ -91,6 +91,29 @@ describe("resolveMemoryWikiStatus", () => {
     expect(status.warnings.map((warning) => warning.code)).toContain("bridge-artifacts-missing");
   });
 
+  it("counts nested pages from the vault", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-status-nested-",
+      initialize: true,
+    });
+    await fs.mkdir(path.join(rootDir, "entities", "contacts"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootDir, "entities", "contacts", "sidsel-skjold.md"),
+      renderWikiMarkdown({
+        frontmatter: { pageType: "entity", id: "entity.sidsel-skjold", title: "Sidsel Skjold" },
+        body: "# Sidsel Skjold\n",
+      }),
+      "utf8",
+    );
+
+    const status = await resolveMemoryWikiStatus(config, {
+      pathExists: async () => true,
+      resolveCommand: async () => null,
+    });
+
+    expect(status.pageCounts.entity).toBe(1);
+  });
+
   it("counts source provenance from the vault", async () => {
     const { rootDir, config } = await createVault({
       prefix: "memory-wiki-status-",
